@@ -203,6 +203,9 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Private workspace for brainstorming, notes, and experiments.
+lab/
+
 # Ruff stuff:
 .ruff_cache/
 

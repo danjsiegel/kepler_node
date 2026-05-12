@@ -1,0 +1,50 @@
+[project]
+name = "kepler-node"
+version = "0.1.0"
+description = "Python-first control stack for an autonomous imaging node"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Dan Siegel" }
+]
+dependencies = [
+  "opencv-python>=4.11.0",
+  "pydantic-settings>=2.10.0",
+  "typer>=0.16.0"
+]
+
+[project.optional-dependencies]
+telemetry = [
+  "duckdb>=1.2.0"
+]
+local-ai = [
+  "ollama>=0.4.7"
+]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.11.0",
+  "pytest>=8.3.0"
+]
+
+[project.scripts]
+kepler-node = "kepler_node.cli:app"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kepler_node"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+extend-select = ["I"]
