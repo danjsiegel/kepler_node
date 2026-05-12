@@ -78,9 +78,7 @@ class Gphoto2CameraBackend:
         try:
             detect_result = self._run(["--auto-detect"])
         except FileNotFoundError as exc:
-            raise RuntimeError(
-                f"gphoto2 binary not found at '{self._gphoto2_bin}'"
-            ) from exc
+            raise RuntimeError(f"gphoto2 binary not found at '{self._gphoto2_bin}'") from exc
 
         if detect_result.returncode != 0 or not detect_result.stdout.strip():
             raise CameraRemoteModeRequired(
@@ -181,15 +179,11 @@ class Gphoto2CameraBackend:
         captured_at = datetime.now(UTC)
 
         if capture_result.returncode != 0:
-            raise RuntimeError(
-                f"gphoto2 capture failed: {capture_result.stderr.strip()}"
-            )
+            raise RuntimeError(f"gphoto2 capture failed: {capture_result.stderr.strip()}")
 
         matches = sorted(request.destination_dir.glob(f"{filename_stem}*"))
         if not matches:
-            raise RuntimeError(
-                "gphoto2 capture reported success but no output file was found"
-            )
+            raise RuntimeError("gphoto2 capture reported success but no output file was found")
 
         image_path = matches[0]
 

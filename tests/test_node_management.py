@@ -321,9 +321,7 @@ def test_confirm_time_action_passes_through_when_session_idle(
     valid_ts = datetime(2026, 5, 11, 22, 0, 0, tzinfo=UTC)
 
     with patch("subprocess.run", return_value=_completed_proc(returncode=0)):
-        status = confirm_time_action(
-            session=session, backend=backend, timestamp=valid_ts
-        )
+        status = confirm_time_action(session=session, backend=backend, timestamp=valid_ts)
 
     assert status.trusted is True
     assert status.source == TimeSource.OPERATOR_CONFIRMED
@@ -369,9 +367,7 @@ def test_confirm_time_action_rejects_recover_state(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("state", sorted(_ACTIVE_MOTION_CAPTURE_STATES, key=str))
-def test_confirm_time_action_rejects_active_motion_states(
-    state: ClawState, tmp_path: Path
-) -> None:
+def test_confirm_time_action_rejects_active_motion_states(state: ClawState, tmp_path: Path) -> None:
     session = RuntimeSession(state=state, control_locked=False)
     backend = _make_backend(tmp_path)
     valid_ts = datetime(2026, 5, 11, 22, 0, 0, tzinfo=UTC)

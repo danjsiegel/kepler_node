@@ -107,17 +107,23 @@ class AstrometryNetSolverBackend:
             self._solve_field_bin,
             "--no-plots",
             "--overwrite",
-            "--dir", tmp_dir,
-            "--new-fits", "none",
+            "--dir",
+            tmp_dir,
+            "--new-fits",
+            "none",
             "--temp-axy",
-            "--time-limit", str(int(timeout)),
+            "--time-limit",
+            str(int(timeout)),
         ]
         if not blind and expected_ra_hours is not None and expected_dec_deg is not None:
             ra_deg = expected_ra_hours * 15.0
             args += [
-                "--ra", str(ra_deg),
-                "--dec", str(expected_dec_deg),
-                "--radius", "15",
+                "--ra",
+                str(ra_deg),
+                "--dec",
+                str(expected_dec_deg),
+                "--radius",
+                "15",
             ]
         if self._index_path is not None:
             args += ["--index-path", str(self._index_path)]

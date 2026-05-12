@@ -236,9 +236,7 @@ def confirm_time_action(
         return TimeStatus(
             trusted=False,
             source=TimeSource.UNTRUSTED,
-            summary=(
-                "rejected: time confirmation is not safe during active motion or capture"
-            ),
+            summary=("rejected: time confirmation is not safe during active motion or capture"),
             observed_at=datetime.now(UTC),
         )
     return backend.confirm_time(timestamp)

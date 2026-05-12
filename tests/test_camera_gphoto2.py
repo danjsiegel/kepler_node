@@ -168,7 +168,6 @@ def test_connect_raises_when_shutter_preference_set_config_fails() -> None:
     assert backend._connected is False
 
 
-
 # ---------------------------------------------------------------------------
 
 
@@ -251,9 +250,7 @@ def test_capture_started_event_is_queued_before_subprocess_returns(
     def fake_run(cmd: list[str], **_: object) -> MagicMock:
         if "--capture-image-and-download" in cmd:
             # Inspect pending events while the capture is "in flight"
-            events_at_capture_time.extend(
-                e.event_type for e in backend._pending_events
-            )
+            events_at_capture_time.extend(e.event_type for e in backend._pending_events)
             fake_image.parent.mkdir(parents=True, exist_ok=True)
             fake_image.touch()
         return _proc(returncode=0)

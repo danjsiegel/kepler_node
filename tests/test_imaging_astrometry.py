@@ -17,8 +17,7 @@ from kepler_node.imaging.protocols import SolveFailureCategory, SolveResult
 # ---------------------------------------------------------------------------
 
 _SOLVE_SUCCESS_OUTPUT = (
-    "Field center: (RA,Dec) = (202.469, 47.195) deg.\n"
-    "Field size: 2.5 x 1.6 degrees\n"
+    "Field center: (RA,Dec) = (202.469, 47.195) deg.\nField size: 2.5 x 1.6 degrees\n"
 )
 _FIELD_NOT_SOLVED = "Field not solved.\n"
 
@@ -121,9 +120,7 @@ def test_classify_failure_maps_output_to_category(
     output_fragment: str,
     expected_category: SolveFailureCategory,
 ) -> None:
-    category = AstrometryNetSolverBackend._classify_failure(
-        f"Field not solved.\n{output_fragment}"
-    )
+    category = AstrometryNetSolverBackend._classify_failure(f"Field not solved.\n{output_fragment}")
     assert category == expected_category
 
 

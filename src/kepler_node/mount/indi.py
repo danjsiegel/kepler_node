@@ -44,8 +44,10 @@ class INDIMountBackend:
         result = subprocess.run(
             [
                 "indi_getprop",
-                "-h", self._host,
-                "-p", str(self._port),
+                "-h",
+                self._host,
+                "-p",
+                str(self._port),
                 property_path,
             ],
             capture_output=True,
@@ -58,8 +60,10 @@ class INDIMountBackend:
         result = subprocess.run(
             [
                 "indi_setprop",
-                "-h", self._host,
-                "-p", str(self._port),
+                "-h",
+                self._host,
+                "-p",
+                str(self._port),
                 property_assignment,
             ],
             capture_output=True,
@@ -92,9 +96,7 @@ class INDIMountBackend:
             ra_hours = float(ra_raw.split("=")[-1])
             dec_deg = float(dec_raw.split("=")[-1])
         except (ValueError, IndexError) as exc:
-            raise RuntimeError(
-                f"Could not parse mount position from INDI output: {exc!r}"
-            ) from exc
+            raise RuntimeError(f"Could not parse mount position from INDI output: {exc!r}") from exc
         return MountPosition(ra_hours=ra_hours, dec_deg=dec_deg)
 
     def slew_to(self, position: MountPosition) -> None:
