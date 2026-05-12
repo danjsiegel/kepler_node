@@ -16,6 +16,11 @@ _CONFLICT_ELIGIBLE_TYPES = {
 
 _DEFAULT_WINDOW_SECONDS = 30.0
 
+# Detail keys used as fingerprints when matching authored vs observed events.
+# When both the authored record and the observed event carry any of these keys,
+# the values must agree for the event to be considered self-authored.
+_FINGERPRINT_KEYS = frozenset({"ra_hours", "dec_deg", "action", "frame_label"})
+
 
 class AuthorshipTracker:
     """Maintains a rolling window of Kepler-issued motion and capture commands.
@@ -35,9 +40,29 @@ class AuthorshipTracker:
         self._authored.append(event)
 
     def is_authored(self, event: DeviceActivityEvent) -> bool:
-        """Return True if an observed event matches a recent Kepler-issued command."""
+        """Return True if an observed event matches a recent Kepler-issued command.
+
+        Matching first requires the same ``event_type``.  When both the authored
+        record and the observed event carry overlapping fingerprint keys (ra_hours,
+        dec_deg, action, frame_label), all overlapping key-values must agree.
+        If neither side has fingerprint keys the match falls back to event_type
+        alone, preserving backward compatibility with adapters that do not yet
+        populate details.
+        """
         self._prune()
-        return any(authored.event_type == event.event_type for authored in self._authored)
+        for authored in self._authored:
+            if authored.event_type != event.event_type:
+                continue
+            authored_fp = {k: v for k, v in authored.details.items() if k in _FINGERPRINT_KEYS}
+            observed_fp = {k: v for k, v in event.details.items() if k in _FINGERPRINT_KEYS}
+            overlap_keys = authored_fp.keys() & observed_fp.keys()
+            if overlap_keys:
+                if all(authored_fp[k] == observed_fp[k] for k in overlap_keys):
+                    return True
+            else:
+                # No fingerprint keys on either or both sides: event_type match suffices.
+                return True
+        return False
 
     def is_conflict(self, event: DeviceActivityEvent, *, control_locked: bool) -> bool:
         """Return True if the observed event looks like an external control conflict.

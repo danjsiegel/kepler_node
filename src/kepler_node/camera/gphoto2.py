@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import subprocess
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Iterable
 
 from kepler_node.agent.interfaces import DeviceActivityEvent, DeviceActivityEventType
 from kepler_node.camera.protocols import (
-    CameraBackend,
     CameraSettings,
     CaptureRequest,
     CaptureResult,

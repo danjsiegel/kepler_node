@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Iterable
 
 from kepler_node.agent.interfaces import DeviceActivityEvent, DeviceActivityEventType
-from kepler_node.mount.protocols import MountBackend, MountPosition
+from kepler_node.mount.protocols import MountPosition
 
 
 class INDIMountBackend:

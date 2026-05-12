@@ -13,7 +13,6 @@ from kepler_node.agent.interfaces import DeviceActivityEvent, DeviceActivityEven
 from kepler_node.mount.indi import INDIMountBackend
 from kepler_node.mount.protocols import MountPosition
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

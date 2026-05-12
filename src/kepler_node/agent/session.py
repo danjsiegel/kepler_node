@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -67,6 +68,31 @@ class RuntimeSession(BaseModel):
     resume_context: ResumeContext | None = None
     terminal_outcome: TerminalOutcome | None = None
 
+    # Staged target for centering and recovery verification
+    staged_target_ra_hours: float | None = None
+    staged_target_dec_deg: float | None = None
+    staged_target_id: str | None = None
+
+    # Inline run parameters (set before session start)
+    run_parameters: dict[str, Any] = Field(default_factory=dict)
+
+    # Calibration state
+    calibration_accepted: bool = False
+
+    # Latest solve state (used by recovery decision logic)
+    last_frame_path: str | None = None
+    last_solve_ra_hours: float | None = None
+    last_solve_dec_deg: float | None = None
+    last_residual_arcmin: float | None = None
+    last_solve_failure_category: str | None = None
+
+    # Runtime retry counters (reset on fresh workflows; persisted into events)
+    solve_attempts: int = 0
+    calibration_loop_count: int = 0
+    centering_loop_count: int = 0
+    consecutive_bad_frames: int = 0
+    reconnect_attempts: int = 0
+
     @property
     def is_terminal(self) -> bool:
         """Return whether the current state is terminal."""
@@ -91,6 +117,41 @@ class RuntimeSession(BaseModel):
         self.state = ClawState.CAPTURE
         self.workflow_intent = WorkflowIntent.CAPTURE
         self.control_locked = True
+
+    def enter_recover(self) -> None:
+        """Transition to the recover state."""
+
+        self.state = ClawState.RECOVER
+
+    def stage_target(
+        self,
+        *,
+        ra_hours: float,
+        dec_deg: float,
+        target_id: str | None = None,
+    ) -> None:
+        """Accept and stage a target for centering, then enter target_acquired."""
+
+        self.staged_target_ra_hours = ra_hours
+        self.staged_target_dec_deg = dec_deg
+        self.staged_target_id = target_id
+        self.state = ClawState.TARGET_ACQUIRED
+        self.workflow_intent = WorkflowIntent.TARGET_CENTERING
+
+    def accept_calibration(self) -> None:
+        """Mark calibration as accepted and reset its loop counters."""
+
+        self.calibration_accepted = True
+        self.calibration_loop_count = 0
+        self.solve_attempts = 0
+
+    def reset_verification_counters(self) -> None:
+        """Reset per-workflow retry counters when starting a fresh loop."""
+
+        self.solve_attempts = 0
+        self.calibration_loop_count = 0
+        self.centering_loop_count = 0
+        self.consecutive_bad_frames = 0
 
     def pause(
         self,

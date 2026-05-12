@@ -15,12 +15,11 @@ from kepler_node.agent.interfaces import (
     TimeSource,
 )
 from kepler_node.agent.node_management import (
-    LocalNodeManagementBackend,
     _ACTIVE_MOTION_CAPTURE_STATES,
+    LocalNodeManagementBackend,
     confirm_time_action,
 )
 from kepler_node.agent.session import ClawState, RuntimeSession
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -11,7 +11,6 @@ import pytest
 from kepler_node.imaging.astrometry import AstrometryNetSolverBackend
 from kepler_node.imaging.protocols import SolveFailureCategory, SolveResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

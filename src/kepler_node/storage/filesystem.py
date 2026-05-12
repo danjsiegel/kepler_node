@@ -31,6 +31,15 @@ class FilesystemSessionStore:
         )
         return session_dir
 
+    def read_session_record(self, session_id: str) -> SessionRecord | None:
+        """Load and return session.json for *session_id*, or None if not found."""
+        try:
+            session_dir = self._resolve_session_dir(session_id)
+            data = (session_dir / "session.json").read_text(encoding="utf-8")
+            return SessionRecord.model_validate_json(data)
+        except (FileNotFoundError, Exception):
+            return None
+
     def append_event(self, session_id: str, event: EventRecord) -> Path:
         """Append one event record to the canonical NDJSON event stream."""
 
