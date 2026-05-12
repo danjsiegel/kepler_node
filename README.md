@@ -21,10 +21,6 @@ uv run kepler-node --help
 uv run pytest
 ```
 
-## Scratch Space
-
-`lab/` is private scratch space for figuring out the problem before it deserves to become repo design. Keep rough notes, experiments, open questions, and half-baked ideas there. Pull conclusions back into tracked docs only after they harden.
-
 ## Current Repo State
 
 - uv-managed Python scaffold
