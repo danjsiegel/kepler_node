@@ -33,6 +33,8 @@ The codebase is split around the main runtime boundaries instead of collapsing o
 - `api`: local FastAPI app and response models
 - `ui`: Streamlit operator console and API client
 
+For diagrams of the runtime layout and session loop, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Workflow Coverage
 
 - Boot, discover, connect, and readiness evaluation with named blockers such as time uncertainty, critically low storage, and power-integrity warnings

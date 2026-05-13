@@ -2,6 +2,22 @@
 
 Kepler Node starts from one concrete deployment target and grows outward from stable capability boundaries.
 
+## System View
+
+```mermaid
+flowchart LR
+	Operator[Operator] --> UI[Streamlit UI]
+	Operator --> CLI[Typer CLI]
+	CLI --> API[FastAPI API]
+	UI --> API
+	API --> Claw[Claw Controller]
+	Claw --> Node[Node Management]
+	Claw --> Camera[Camera Adapter]
+	Claw --> Mount[Mount Adapter]
+	Claw --> Solver[Imaging and Solver]
+	Claw --> Storage[(Filesystem Storage)]
+```
+
 ## Current Posture
 
 - Optimize first for Raspberry Pi 5 + iEXOS-100-02 PMC-Eight + Fuji X-T5
@@ -15,6 +31,45 @@ Kepler Node starts from one concrete deployment target and grows outward from st
 - `kepler_node.mount`: mount control and sync flows
 - `kepler_node.imaging`: quality checks, solving, and image analysis
 - `kepler_node.storage`: telemetry, artifacts, and session persistence
+
+## Session Loop
+
+```mermaid
+flowchart TD
+	Boot[boot] --> Discover[discover]
+	Discover --> Connect[connect]
+	Connect --> Ready[ready]
+	Connect --> Paused[paused]
+
+	Ready --> Calibrate[calibrate]
+	Ready --> Target[target acquired]
+
+	Calibrate --> TestCapture[test capture]
+	Target --> TestCapture
+
+	TestCapture --> Solve[solve]
+	Solve --> Verify[center verify]
+
+	Verify --> Ready
+	Verify --> Correct[correct]
+	Verify --> Capture[capture]
+
+	Correct --> TestCapture
+	Capture --> Guard[guard]
+	Guard --> Capture
+	Guard --> Recover[recover]
+	Recover --> TestCapture
+	Recover --> Connect
+
+	Ready --> Paused
+	Target --> Paused
+	Capture --> Paused
+	Recover --> Paused
+
+	Guard --> Completed[completed]
+	Paused --> Completed
+	Paused --> Failed[failed]
+```
 
 ## Near-Term Goal
 
