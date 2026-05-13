@@ -1,4 +1,4 @@
-"""Tests for POST session action endpoints (Phase 4).
+"""Tests for POST session action endpoints.
 
 Covers release-control, acknowledge-complete, clear-failure, stop,
 pause, and resume, including 409/422 error cases.

@@ -1,4 +1,4 @@
-"""Focused tests for the Kepler Claw state-machine controller (Phase 3)."""
+"""Focused tests for the Kepler Claw state-machine controller."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Streamlit operator console for the Kepler Node (Phase 4).
+"""Streamlit operator console for the Kepler Node.
 
 Entrypoint: ``streamlit run src/kepler_node/ui/streamlit_app.py``
 

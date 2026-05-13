@@ -1,4 +1,4 @@
-"""Pydantic models for the Kepler Node local API (Phase 4)."""
+"""Pydantic models for the Kepler Node local API."""
 
 from __future__ import annotations
 

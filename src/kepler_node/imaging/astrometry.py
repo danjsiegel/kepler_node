@@ -15,8 +15,8 @@ class AstrometryNetSolverBackend:
     """Subprocess-backed local astrometry.net solver.
 
     Normalizes ``solve-field`` output into the v1 ``SolveResult`` payload,
-    mapping all accepted failure categories.  Blind-solve retry policy and
-    confidence degradation decisions remain in Claw (Phase 3).
+    mapping all accepted failure categories. Blind-solve retry policy and
+    confidence degradation decisions remain in Claw.
     """
 
     def __init__(

@@ -1,4 +1,4 @@
-"""FastAPI application builder for the Kepler Node local API (Phase 4).
+"""FastAPI application builder for the Kepler Node local API.
 
 Usage::
 

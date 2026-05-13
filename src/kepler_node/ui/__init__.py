@@ -1,4 +1,4 @@
-"""Streamlit operator console for the Kepler Node (Phase 4)."""
+"""Streamlit operator console for the Kepler Node."""
 
 from kepler_node.ui.api_client import KeplerApiClient
 

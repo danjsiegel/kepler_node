@@ -19,19 +19,19 @@ class Settings(BaseSettings):
     project_root: Path = Field(default_factory=lambda: Path.cwd())
     data_dir: Path = Field(default_factory=lambda: Path.cwd() / "data")
 
-    # Phase 2: node-management knobs
+    # Node-management knobs
     managed_service_names: list[str] = Field(default_factory=lambda: ["indiserver", "gpsd"])
     storage_warning_threshold_bytes: int = 20 * 1024 * 1024 * 1024  # 20 GiB
     storage_critical_threshold_bytes: int = 10 * 1024 * 1024 * 1024  # 10 GiB
 
-    # Phase 2: local binary paths
+    # Local binary paths
     gphoto2_binary: str = "gphoto2"
     solve_field_binary: str = "solve-field"
 
-    # Phase 2: INDI server connection
+    # INDI server connection
     indiserver_host: str = "localhost"
     indiserver_port: int = 7624
 
-    # Phase 4: local API server
+    # Local API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000

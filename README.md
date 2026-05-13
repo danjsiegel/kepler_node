@@ -1,12 +1,14 @@
 # Kepler Node
 
+![Kepler Node badge](kepler_node.png)
+
 Kepler Node is a Python-first control stack for a field-ready astrophotography node built around a Raspberry Pi.
 
 The current v1 implementation focuses on a concrete starter rig: a Raspberry Pi 5, an iEXOS-100-02 PMC-Eight mount, and a Fuji X-T5. The repo is organized so the control logic stays reusable even while the first release is optimized for that hardware.
 
 Today the project includes a real Claw state machine, adapter-backed hardware and node-management boundaries, local filesystem session persistence, a local FastAPI control surface, and a thin Streamlit operator UI for the first mobile-first workflow screens.
 
-## Current Capabilities
+## What It Does
 
 - Python managed with `uv`
 - Typed settings and a thin Typer CLI
@@ -31,7 +33,7 @@ The codebase is split around the main runtime boundaries instead of collapsing o
 - `api`: local FastAPI app and response models
 - `ui`: Streamlit operator console and API client
 
-## Implemented v1 Slice
+## Workflow Coverage
 
 - Boot, discover, connect, and readiness evaluation with named blockers such as time uncertainty, critically low storage, and power-integrity warnings
 - Calibration, target-centering, and recovery verification through a shared `test_capture -> solve -> center_verify -> correct` loop
@@ -75,12 +77,5 @@ uv run --extra ui streamlit run src/kepler_node/ui/streamlit_app.py
 
 ```bash
 uv run kepler-node info
-uv run kepler-node lab-path
 uv run --extra local-api kepler-node serve --help
 ```
-
-## Project Status
-
-- Phase 4 local API and thin UI slice is implemented in the current tree
-- The repo includes focused API/UI tests plus broader state-machine coverage
-- The private `lab/` workspace is used for grind runs, specs, and implementation notes

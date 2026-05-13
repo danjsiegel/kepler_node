@@ -1,4 +1,4 @@
-"""Tests for GET /api/v1/session/current and /state (Phase 4)."""
+"""Tests for GET /api/v1/session/current and /state."""
 
 from __future__ import annotations
 
