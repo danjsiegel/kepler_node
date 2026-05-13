@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -23,7 +23,6 @@ from kepler_node.camera.protocols import CameraSettings, CaptureRequest, Capture
 from kepler_node.imaging.protocols import SolveResult
 from kepler_node.mount.protocols import MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
-
 
 # ------------------------------------------------------------------ #
 # Shared fakes (minimal inline versions)                              #

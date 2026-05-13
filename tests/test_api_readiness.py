@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable
-from unittest.mock import MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 
 from kepler_node.agent.authorship import AuthorshipTracker
@@ -23,10 +20,9 @@ from kepler_node.agent.interfaces import (
 from kepler_node.agent.session import ClawState, RuntimeSession
 from kepler_node.api.app import build_app
 from kepler_node.camera.protocols import CameraSettings, CaptureRequest, CaptureResult
-from kepler_node.imaging.protocols import SolveFailureCategory, SolveResult
+from kepler_node.imaging.protocols import SolveResult
 from kepler_node.mount.protocols import MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
-
 
 # ------------------------------------------------------------------ #
 # Shared fake adapters                                                 #

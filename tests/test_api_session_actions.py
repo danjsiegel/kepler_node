@@ -29,7 +29,6 @@ from kepler_node.mount.protocols import MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
 from kepler_node.storage.models import SessionRecord
 
-
 # ------------------------------------------------------------------ #
 # Minimal shared fakes                                                 #
 # ------------------------------------------------------------------ #

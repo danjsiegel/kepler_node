@@ -25,7 +25,6 @@ from kepler_node.mount.protocols import MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
 from kepler_node.storage.models import ArtifactKind, ArtifactReference, FrameRecord, SessionRecord
 
-
 # ------------------------------------------------------------------ #
 # Shared fakes                                                         #
 # ------------------------------------------------------------------ #
@@ -202,7 +201,7 @@ def test_frames_cursor_pagination(tmp_path: Path) -> None:
     session_id = "sess-frames-03"
     session = RuntimeSession(session_id=session_id, state=ClawState.CAPTURE)
     ctrl, store = _make(session, tmp_path)
-    ids = _write_frames(store, session_id, count=4)
+    _write_frames(store, session_id, count=4)
     client = TestClient(build_app(controller=ctrl))
 
     # Get first page
