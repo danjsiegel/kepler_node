@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover
 # Mock API client factory                                              #
 # ------------------------------------------------------------------ #
 
+
 def _make_mock_client() -> MagicMock:
     """Return a mock KeplerApiClient that represents a healthy ready node
     with no active session."""
@@ -69,6 +70,7 @@ def _make_mock_client() -> MagicMock:
 # Smoke tests                                                          #
 # ------------------------------------------------------------------ #
 
+
 def _run_app_with_mock_client(mock_client: MagicMock) -> AppTest:
     """Run the Streamlit app in a headless AppTest with a patched KeplerApiClient."""
     with patch(
@@ -95,7 +97,9 @@ def test_all_three_tabs_render_in_no_active_session_posture() -> None:
     headers = [h.value for h in at.header]
     assert "Overview" in headers, f"Overview header missing; found: {headers}"
     assert "Equipment Profiles" in headers, f"Equipment Profiles header missing; found: {headers}"
-    assert "Target & Session Start" in headers, f"Target & Session Start header missing; found: {headers}"
+    assert "Target & Session Start" in headers, (
+        f"Target & Session Start header missing; found: {headers}"
+    )
     assert "Session" in headers, f"Session header missing; found: {headers}"
     assert "Review" in headers, f"Review header missing; found: {headers}"
 

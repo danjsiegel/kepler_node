@@ -19,9 +19,7 @@ from typing import Any
 try:
     import streamlit as st
 except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "streamlit is required.  Install with: uv pip install streamlit"
-    ) from exc
+    raise ImportError("streamlit is required.  Install with: uv pip install streamlit") from exc
 
 from kepler_node.ui.api_client import KeplerApiClient
 
@@ -41,6 +39,7 @@ st.set_page_config(
 # ------------------------------------------------------------------ #
 # Shared client                                                        #
 # ------------------------------------------------------------------ #
+
 
 @st.cache_resource
 def _client() -> KeplerApiClient:
@@ -190,10 +189,16 @@ with overview_tab:
         col_m, col_c = st.columns(2)
         with col_m:
             mount_icon = "✅" if mount_info.get("connected") else "❌"
-            st.metric("Mount", f"{mount_icon} {'Connected' if mount_info.get('connected') else 'Not connected'}")
+            st.metric(
+                "Mount",
+                f"{mount_icon} {'Connected' if mount_info.get('connected') else 'Not connected'}",
+            )
         with col_c:
             camera_icon = "✅" if camera_info.get("connected") else "❌"
-            st.metric("Camera", f"{camera_icon} {'Connected' if camera_info.get('connected') else 'Not connected'}")
+            st.metric(
+                "Camera",
+                f"{camera_icon} {'Connected' if camera_info.get('connected') else 'Not connected'}",
+            )
 
     st.divider()
 
@@ -214,7 +219,9 @@ with overview_tab:
                     if resp.get("applied"):
                         st.success(f"Time confirmed: {resp.get('summary', 'ok')}")
                     else:
-                        st.error(f"Time confirmation failed: {resp.get('summary', 'unknown error')}")
+                        st.error(
+                            f"Time confirmation failed: {resp.get('summary', 'unknown error')}"
+                        )
                     st.rerun()
                 except Exception as exc:
                     st.error(str(exc))
@@ -297,8 +304,7 @@ with equipment_tab:
             detail = (
                 f"Mount: {hw.get('mount_model', '—')} · "
                 f"Camera: {hw.get('camera_make', '')} {hw.get('camera_model', '—')} · "
-                f"Lens: {hw.get('lens_model', '—')}"
-                + (" ⚠️ Zoom" if hw.get("lens_is_zoom") else "")
+                f"Lens: {hw.get('lens_model', '—')}" + (" ⚠️ Zoom" if hw.get("lens_is_zoom") else "")
             )
 
             with st.expander(label):
@@ -324,9 +330,7 @@ with equipment_tab:
         try:
             body = _json.loads(profile_json_input)
             resp = client.post_equipment_profile(body)
-            st.success(
-                f"Profile {resp.get('profile', {}).get('display_name', 'imported')!r} added"
-            )
+            st.success(f"Profile {resp.get('profile', {}).get('display_name', 'imported')!r} added")
             st.rerun()
         except Exception as exc:
             st.error(str(exc))
@@ -355,7 +359,11 @@ with target_tab:
         st.caption(
             f"Active profile: **{active_prof_t.get('display_name', '—')}** · "
             f"Focal length: {active_prof_t.get('focal_length_mm', '—')} mm"
-            + (" ⚠️ Zoom lens — focal length assumption required" if active_prof_t.get('lens_is_zoom') else "")
+            + (
+                " ⚠️ Zoom lens — focal length assumption required"
+                if active_prof_t.get("lens_is_zoom")
+                else ""
+            )
         )
     else:
         st.warning("No equipment profile selected.  Go to the Equipment tab first.")
@@ -390,7 +398,9 @@ with target_tab:
                 and run_params.get("stop_condition")
             )
             if not has_run_params:
-                st.warning("Run parameters (exposure_seconds, camera_settings, stop_condition) are required.")
+                st.warning(
+                    "Run parameters (exposure_seconds, camera_settings, stop_condition) are required."
+                )
             else:
                 if st.button("🚀 Start Session", key="start_session_btn"):
                     try:
@@ -400,8 +410,14 @@ with target_tab:
                     except Exception as exc:
                         st.error(str(exc))
         elif current_state_t in {
-            "target_acquired", "test_capture", "solve", "correct",
-            "center_verify", "capture", "guard", "recover",
+            "target_acquired",
+            "test_capture",
+            "solve",
+            "correct",
+            "center_verify",
+            "capture",
+            "guard",
+            "recover",
         }:
             st.info("Session in progress.  See the Session tab for controls.")
     else:
@@ -412,12 +428,18 @@ with target_tab:
 
     with st.form("stage_target_form"):
         target_label = st.text_input("Target Name", placeholder="e.g. M31")
-        ra_hours = st.number_input("RA (hours)", min_value=0.0, max_value=24.0, step=0.001, format="%.4f")
-        dec_deg = st.number_input("Dec (degrees)", min_value=-90.0, max_value=90.0, step=0.001, format="%.4f")
+        ra_hours = st.number_input(
+            "RA (hours)", min_value=0.0, max_value=24.0, step=0.001, format="%.4f"
+        )
+        dec_deg = st.number_input(
+            "Dec (degrees)", min_value=-90.0, max_value=90.0, step=0.001, format="%.4f"
+        )
         target_source = st.selectbox("Source", ["manual", "kstars_ekos", "catalog"], index=0)
 
         st.markdown("**Run Parameters**")
-        exposure_seconds = st.number_input("Exposure (seconds)", min_value=1.0, step=1.0, value=120.0)
+        exposure_seconds = st.number_input(
+            "Exposure (seconds)", min_value=1.0, step=1.0, value=120.0
+        )
         gain = st.number_input("Camera Gain", min_value=0, step=1, value=100)
         frame_count = st.number_input("Frame Count Limit", min_value=1, step=1, value=60)
 

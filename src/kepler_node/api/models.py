@@ -179,6 +179,7 @@ class TimeConfirmResponse(BaseModel):
 # Equipment profile API models                                         #
 # ------------------------------------------------------------------ #
 
+
 class EquipmentProfileSummary(BaseModel):
     """Single entry in GET /api/v1/equipment/profiles list."""
 
@@ -206,6 +207,7 @@ class EquipmentProfileResponse(BaseModel):
 # ------------------------------------------------------------------ #
 # Target intake API models                                             #
 # ------------------------------------------------------------------ #
+
 
 class TargetRequest(BaseModel):
     """POST /api/v1/target request body."""

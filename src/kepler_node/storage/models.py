@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field
 
 from kepler_node.agent.session import ClawState, TerminalOutcome, WorkflowIntent
 
-
 # ====================================================================== #
 # Equipment Profile                                                        #
 # ====================================================================== #
+
 
 class EquipmentProfileHardwareMount(BaseModel):
     model: str | None = None
@@ -42,18 +42,10 @@ class EquipmentProfileHardwareGps(BaseModel):
 
 
 class EquipmentProfileHardware(BaseModel):
-    mount: EquipmentProfileHardwareMount = Field(
-        default_factory=EquipmentProfileHardwareMount
-    )
-    camera: EquipmentProfileHardwareCamera = Field(
-        default_factory=EquipmentProfileHardwareCamera
-    )
-    lens: EquipmentProfileHardwareLens = Field(
-        default_factory=EquipmentProfileHardwareLens
-    )
-    gps: EquipmentProfileHardwareGps = Field(
-        default_factory=EquipmentProfileHardwareGps
-    )
+    mount: EquipmentProfileHardwareMount = Field(default_factory=EquipmentProfileHardwareMount)
+    camera: EquipmentProfileHardwareCamera = Field(default_factory=EquipmentProfileHardwareCamera)
+    lens: EquipmentProfileHardwareLens = Field(default_factory=EquipmentProfileHardwareLens)
+    gps: EquipmentProfileHardwareGps = Field(default_factory=EquipmentProfileHardwareGps)
 
 
 class EquipmentProfileSiteDefaults(BaseModel):
@@ -83,9 +75,7 @@ class EquipmentProfile(BaseModel):
     profile_id: str
     display_name: str
     is_default: bool = False
-    hardware: EquipmentProfileHardware = Field(
-        default_factory=EquipmentProfileHardware
-    )
+    hardware: EquipmentProfileHardware = Field(default_factory=EquipmentProfileHardware)
     site_defaults: EquipmentProfileSiteDefaults = Field(
         default_factory=EquipmentProfileSiteDefaults
     )
@@ -103,6 +93,7 @@ class EquipmentProfile(BaseModel):
 # ====================================================================== #
 # Install Manifest                                                         #
 # ====================================================================== #
+
 
 class InstallManifest(BaseModel):
     """Persisted install manifest written by bootstrap and updated by upgrade."""

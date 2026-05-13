@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import time
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -483,9 +482,7 @@ class ClawController:
 
         blockers = self.check_readiness()
         if blockers:
-            raise RuntimeError(
-                f"session/start blocked: {blockers[0].name} — {blockers[0].summary}"
-            )
+            raise RuntimeError(f"session/start blocked: {blockers[0].name} — {blockers[0].summary}")
 
         time_st = self.node.time_status()
         if not time_st.trusted:
@@ -1427,14 +1424,17 @@ class ClawController:
                 message="session already paused",
                 details={
                     "workflow_intent": (
-                        self.session.workflow_intent.value
-                        if self.session.workflow_intent
-                        else None
+                        self.session.workflow_intent.value if self.session.workflow_intent else None
                     ),
                     "control_locked": self.session.control_locked,
                 },
             )
-        if self.session.state in {ClawState.BOOT, ClawState.DISCOVER, ClawState.CONNECT, ClawState.READY}:
+        if self.session.state in {
+            ClawState.BOOT,
+            ClawState.DISCOVER,
+            ClawState.CONNECT,
+            ClawState.READY,
+        }:
             raise ValueError("No active managed session to pause")
         if self.session.is_terminal:
             raise ValueError("Cannot pause a terminal session")
@@ -1482,7 +1482,9 @@ class ClawController:
             raise ValueError("acknowledge_complete is only valid from the completed state")
         prev = self.session.state
         # Emit while session_id is still set, then clear in-memory state.
-        result = self._make_transition(prev, ClawState.READY, "completed session acknowledged; node returned to ready")
+        result = self._make_transition(
+            prev, ClawState.READY, "completed session acknowledged; node returned to ready"
+        )
         self.session.acknowledge_complete()
         return result
 
@@ -1525,8 +1527,7 @@ class ClawController:
             raise ValueError("clear_failure is only valid from the failed state")
         blockers = self.check_readiness()
         hardware_blocks = [
-            b for b in blockers
-            if b.name in {"storage_critically_low", "power_integrity_warning"}
+            b for b in blockers if b.name in {"storage_critically_low", "power_integrity_warning"}
         ]
         if hardware_blocks:
             names = ", ".join(b.name for b in hardware_blocks)
@@ -1535,7 +1536,9 @@ class ClawController:
             )
         prev = self.session.state
         # Emit while session_id is still set, then clear in-memory state.
-        result = self._make_transition(prev, ClawState.READY, "failed session cleared; node returned to ready")
+        result = self._make_transition(
+            prev, ClawState.READY, "failed session cleared; node returned to ready"
+        )
         self.session.clear_failure()
         return result
 
@@ -1621,9 +1624,7 @@ class ClawController:
         """
         runtime_ctx: dict[str, Any] = {
             "workflow_intent": (
-                self.session.workflow_intent.value
-                if self.session.workflow_intent
-                else None
+                self.session.workflow_intent.value if self.session.workflow_intent else None
             ),
             "control_locked": self.session.control_locked,
         }

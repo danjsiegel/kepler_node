@@ -163,12 +163,14 @@ class FilesystemSessionStore:
         for frame in frames:
             for artifact in frame.artifact_references:
                 created_at = artifact.created_at or frame.capture_timestamp
-                result.append({
-                    "artifact_kind": artifact.artifact_kind,
-                    "relative_path": artifact.relative_path,
-                    "frame_id": frame.frame_id,
-                    "created_at": created_at.isoformat(),
-                })
+                result.append(
+                    {
+                        "artifact_kind": artifact.artifact_kind,
+                        "relative_path": artifact.relative_path,
+                        "frame_id": frame.frame_id,
+                        "created_at": created_at.isoformat(),
+                    }
+                )
         return result
 
     def _resolve_session_dir(self, session_id: str) -> Path:
@@ -207,9 +209,7 @@ class FilesystemSessionStore:
         profile_path = self.profiles_root / f"{profile_id}.json"
         if not profile_path.exists():
             return None
-        return EquipmentProfile.model_validate_json(
-            profile_path.read_text(encoding="utf-8")
-        )
+        return EquipmentProfile.model_validate_json(profile_path.read_text(encoding="utf-8"))
 
     def list_profiles(self) -> list[EquipmentProfile]:
         """Return all stored equipment profiles in creation-time order."""
@@ -218,9 +218,7 @@ class FilesystemSessionStore:
         profiles: list[EquipmentProfile] = []
         for p in sorted(self.profiles_root.glob("*.json")):
             try:
-                profiles.append(
-                    EquipmentProfile.model_validate_json(p.read_text(encoding="utf-8"))
-                )
+                profiles.append(EquipmentProfile.model_validate_json(p.read_text(encoding="utf-8")))
             except Exception:
                 pass
         return profiles
@@ -241,9 +239,7 @@ class FilesystemSessionStore:
             if p.stem == exclude_id:
                 continue
             try:
-                profile = EquipmentProfile.model_validate_json(
-                    p.read_text(encoding="utf-8")
-                )
+                profile = EquipmentProfile.model_validate_json(p.read_text(encoding="utf-8"))
                 if profile.is_default:
                     profile.is_default = False
                     p.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
@@ -262,9 +258,7 @@ class FilesystemSessionStore:
     def write_install_manifest(self, manifest: InstallManifest) -> Path:
         """Persist the install manifest."""
         self.data_root.mkdir(parents=True, exist_ok=True)
-        self.install_manifest_path.write_text(
-            manifest.model_dump_json(indent=2), encoding="utf-8"
-        )
+        self.install_manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
         return self.install_manifest_path
 
     def read_install_manifest(self) -> InstallManifest | None:

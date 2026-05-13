@@ -412,5 +412,8 @@ def test_outcome_failure_explanation_populated_for_failed_session(tmp_path: Path
     assert data["failure_explanation"] is not None, (
         "failure_explanation must be populated so operator can review why the session failed"
     )
-    assert "bad frames" in data["failure_explanation"].lower() or "failed" in data["failure_explanation"].lower()
+    assert (
+        "bad frames" in data["failure_explanation"].lower()
+        or "failed" in data["failure_explanation"].lower()
+    )
     assert data["stop_reason"] is None

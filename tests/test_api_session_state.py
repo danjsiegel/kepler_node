@@ -61,7 +61,6 @@ class _FakeNodeWithTimeUntrusted(_FakeNode):
 
 
 class _FakeMount:
-
     def connect(self) -> None:
         self.connected = True
 
@@ -263,6 +262,7 @@ def test_session_state_latest_message_reflects_real_transition(tmp_path: Path) -
     ctrl.boot()  # BOOT -> DISCOVER; but session starts at READY so the state is READY already
     # Use acknowledge_complete path: put session in COMPLETED then acknowledge
     from kepler_node.agent.session import TerminalOutcome
+
     session.state = ClawState.COMPLETED
     session.terminal_outcome = TerminalOutcome.STOPPED_BY_OPERATOR
     session.session_id = "sess-msg-01"

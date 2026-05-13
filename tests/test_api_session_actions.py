@@ -582,6 +582,7 @@ def test_acknowledge_complete_writes_event_to_session_ndjson(tmp_path: Path) -> 
     store = FilesystemSessionStore(data_root=base)
     # Pre-seed session directory so append_event has a place to write.
     from datetime import UTC, datetime
+
     store.write_session_record(
         SessionRecord(
             session_id=session_id,
@@ -633,6 +634,7 @@ def test_clear_failure_writes_event_to_session_ndjson(tmp_path: Path) -> None:
     vdir.mkdir(parents=True, exist_ok=True)
     store = FilesystemSessionStore(data_root=base)
     from datetime import UTC, datetime
+
     store.write_session_record(
         SessionRecord(
             session_id=session_id,
@@ -661,7 +663,6 @@ def test_clear_failure_writes_event_to_session_ndjson(tmp_path: Path) -> None:
     assert len(events) >= 1, "READY transition event must be in events.ndjson"
     last_event = min(events, key=lambda e: e.sequence)
     assert "ready" in last_event.message.lower() or "cleared" in last_event.message.lower()
-
 
 
 # ------------------------------------------------------------------ #
@@ -708,7 +709,9 @@ def test_stop_action_response_includes_terminal_session_uncleared_blocker(tmp_pa
     )
 
 
-def test_release_control_action_response_includes_terminal_session_uncleared_blocker(tmp_path: Path) -> None:
+def test_release_control_action_response_includes_terminal_session_uncleared_blocker(
+    tmp_path: Path,
+) -> None:
     """POST /session/release-control response must include terminal_session_uncleared blocker."""
     session = RuntimeSession(
         session_id="sess-rc-bl-01",

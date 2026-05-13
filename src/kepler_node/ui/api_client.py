@@ -13,8 +13,7 @@ try:
     import httpx
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
-        "httpx is required for the Kepler UI client.  "
-        "Install it with: uv pip install httpx"
+        "httpx is required for the Kepler UI client.  Install it with: uv pip install httpx"
     ) from exc
 
 

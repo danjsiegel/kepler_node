@@ -523,4 +523,3 @@ def test_readiness_not_ready_when_session_failed_uncleared(tmp_path: Path) -> No
     assert data["ready"] is False
     names = [b["name"] for b in data["blockers"]]
     assert "terminal_session_uncleared" in names
-

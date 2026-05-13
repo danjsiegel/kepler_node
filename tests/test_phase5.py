@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,7 +41,6 @@ from kepler_node.storage.models import (
     EquipmentProfileSolvingHints,
     InstallManifest,
 )
-
 
 # ------------------------------------------------------------------ #
 # Shared fakes (minimal subset from test_api_readiness pattern)        #
@@ -558,6 +556,7 @@ def test_api_session_start_happy_path_creates_session(tmp_path: Path) -> None:
     assert ctrl.session.session_id is not None
     # session_id must match canonical format: session-YYYYMMDDTHHMMSSZ-<6hex> (spec line 1260)
     import re
+
     assert re.fullmatch(r"session-\d{8}T\d{6}Z-[0-9a-f]{6}", ctrl.session.session_id), (
         f"session_id {ctrl.session.session_id!r} does not match canonical format"
     )
@@ -568,6 +567,7 @@ def test_api_session_start_happy_path_creates_session(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ #
 # API: GET /api/v1/node/status — install manifest and planner mode     #
 # ------------------------------------------------------------------ #
+
 
 def test_api_session_start_without_active_profile_returns_422(tmp_path: Path) -> None:
     """POST /api/v1/session/start must return 422 when no active equipment profile is set."""
@@ -594,7 +594,6 @@ def test_api_session_start_without_active_profile_returns_422(tmp_path: Path) ->
     resp = client.post("/api/v1/session/start")
     assert resp.status_code == 422
     assert "equipment profile" in resp.json()["detail"].lower()
-
 
 
 def test_api_node_status_includes_install_manifest_fields(tmp_path: Path) -> None:
@@ -771,9 +770,7 @@ def test_upgrade_sh_records_health_checks_failed_on_exit_1() -> None:
         "upgrade.sh must contain a sed command for 'health-checks-failed' manifest outcome"
     )
     exit_pos = content.find("exit 1", hcf_pos)
-    assert exit_pos != -1, (
-        "upgrade.sh must call 'exit 1' after the health-checks-failed sed"
-    )
+    assert exit_pos != -1, "upgrade.sh must call 'exit 1' after the health-checks-failed sed"
     assert hcf_pos < exit_pos, (
         "upgrade.sh must record health-checks-failed before exit 1 (sed must precede exit 1)"
     )
@@ -796,12 +793,12 @@ def test_upgrade_sh_starts_service_unconditionally_when_not_skip_restart() -> No
     """upgrade.sh Step 5 must start kepler-node without requiring it was previously active."""
     content = (_REPO_ROOT / "upgrade.sh").read_text()
     # The new Step 5 must use 'systemctl start' not 'is-active && restart'
-    assert re.search(r'systemctl start kepler-node', content), (
+    assert re.search(r"systemctl start kepler-node", content), (
         "upgrade.sh Step 5 must use 'systemctl start kepler-node' so it works "
         "when the service was stopped or inactive before the upgrade"
     )
     # Must NOT gate the start on prior is-active state
-    combined_pattern = r'is-active.*kepler-node.*\n.*systemctl (restart|start) kepler-node'
+    combined_pattern = r"is-active.*kepler-node.*\n.*systemctl (restart|start) kepler-node"
     assert not re.search(combined_pattern, content), (
         "upgrade.sh Step 5 must not condition service start on prior is-active state"
     )
@@ -905,9 +902,7 @@ def test_upgrade_sh_preflight_checks_os_and_architecture() -> None:
     # Both checks must precede service stop
     arch_pos = content.find("uname -m")
     stop_pos = content.find("systemctl stop kepler-node")
-    assert arch_pos < stop_pos, (
-        "upgrade.sh architecture check must run before stopping services"
-    )
+    assert arch_pos < stop_pos, "upgrade.sh architecture check must run before stopping services"
 
 
 def test_upgrade_sh_preflight_checks_free_space() -> None:
@@ -940,9 +935,7 @@ def test_upgrade_sh_preflight_checks_service_layout() -> None:
     )
     cat_pos = content.find("systemctl cat")
     stop_pos = content.find("systemctl stop kepler-node")
-    assert cat_pos < stop_pos, (
-        "upgrade.sh service-layout check must run before stopping services"
-    )
+    assert cat_pos < stop_pos, "upgrade.sh service-layout check must run before stopping services"
 
 
 def test_upgrade_sh_preflight_checks_manifest_writeability() -> None:
@@ -978,9 +971,6 @@ def test_scripts_do_not_install_dev_dependencies() -> None:
         )
 
 
-
-
-
 def test_bootstrap_sh_field_fallback_creates_indiserver_service() -> None:
     """bootstrap.sh must create indiserver.service for both profiles (spec line 1661, 1682)."""
     content = (_REPO_ROOT / "bootstrap.sh").read_text()
@@ -1005,9 +995,7 @@ def test_bootstrap_sh_field_fallback_includes_indiserver_in_service_ordering() -
     assert "indiserver.service" in content
     # Verify it's not only set for headless-node: the assignment must not be
     # inside a headless-node conditional
-    service_wants_match = re.search(
-        r'SERVICE_WANTS="[^"]*indiserver\.service[^"]*"', content
-    )
+    service_wants_match = re.search(r'SERVICE_WANTS="[^"]*indiserver\.service[^"]*"', content)
     assert service_wants_match is not None, (
         "bootstrap.sh SERVICE_WANTS must include indiserver.service for all profiles"
     )
@@ -1052,7 +1040,7 @@ def test_upgrade_sh_preflight_checks_supported_from_versions() -> None:
         "upgrade.sh supported-version check must run before stopping services"
     )
     # The check must fail closed (call fail) when version is unsupported
-    assert "fail " in content[supported_pos : stop_pos], (
+    assert "fail " in content[supported_pos:stop_pos], (
         "upgrade.sh must call fail() when the current version is not in supported_from_versions"
     )
 

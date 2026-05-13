@@ -118,11 +118,7 @@ def _get_session_blockers(session: RuntimeSession) -> list[BlockerCondition]:
         return []
 
     if session.is_terminal:
-        action = (
-            "acknowledge-complete"
-            if session.state == ClawState.COMPLETED
-            else "clear-failure"
-        )
+        action = "acknowledge-complete" if session.state == ClawState.COMPLETED else "clear-failure"
         return [
             BlockerCondition(
                 name="terminal_session_uncleared",
@@ -168,9 +164,7 @@ def _action_resp(
     return ActionResponse(
         state=state,
         workflow_intent=(
-            controller.session.workflow_intent.value
-            if controller.session.workflow_intent
-            else None
+            controller.session.workflow_intent.value if controller.session.workflow_intent else None
         ),
         control_locked=controller.session.control_locked,
         message=message,
@@ -210,7 +204,11 @@ def build_app(*, controller: ClawController) -> FastAPI:
             summary=f"Node is {overall}",
             updated_at=datetime.now(UTC),
             services=[
-                {"name": s.name, "status": "healthy" if s.healthy else "degraded", "summary": s.summary}
+                {
+                    "name": s.name,
+                    "status": "healthy" if s.healthy else "degraded",
+                    "summary": s.summary,
+                }
                 for s in services
             ],
         )
@@ -236,9 +234,7 @@ def build_app(*, controller: ClawController) -> FastAPI:
                 "bootstrap_profile": manifest.bootstrap_profile,
                 "installed_at": manifest.installed_at.isoformat(),
                 "last_upgrade_at": (
-                    manifest.last_upgrade_at.isoformat()
-                    if manifest.last_upgrade_at
-                    else None
+                    manifest.last_upgrade_at.isoformat() if manifest.last_upgrade_at else None
                 ),
                 "last_upgrade_result": manifest.last_upgrade_result,
             }
@@ -427,9 +423,7 @@ def build_app(*, controller: ClawController) -> FastAPI:
         return SessionSummaryResponse(
             session_id=session.session_id,
             state=session.state,
-            workflow_intent=(
-                session.workflow_intent.value if session.workflow_intent else None
-            ),
+            workflow_intent=(session.workflow_intent.value if session.workflow_intent else None),
             control_locked=session.control_locked,
             target_summary=target,
             run_parameters=session.run_parameters,
@@ -440,9 +434,7 @@ def build_app(*, controller: ClawController) -> FastAPI:
             },
             blockers=[_to_blocker(b) for b in blockers],
             degraded=_get_degraded(controller),
-            terminal_outcome=(
-                session.terminal_outcome.value if session.terminal_outcome else None
-            ),
+            terminal_outcome=(session.terminal_outcome.value if session.terminal_outcome else None),
         )
 
     # ------------------------------------------------------------------ #
@@ -468,9 +460,7 @@ def build_app(*, controller: ClawController) -> FastAPI:
         return SessionStateResponse(
             session_id=session.session_id,
             state=session.state,
-            workflow_intent=(
-                session.workflow_intent.value if session.workflow_intent else None
-            ),
+            workflow_intent=(session.workflow_intent.value if session.workflow_intent else None),
             control_locked=session.control_locked,
             latest_message=session.latest_message or f"state: {session.state}",
             blockers=[_to_blocker(b) for b in blockers],
@@ -675,7 +665,9 @@ def build_app(*, controller: ClawController) -> FastAPI:
         }:
             stop_reason = session.terminal_outcome.value
         elif session.terminal_outcome == TerminalOutcome.FAILED:
-            failure_explanation = session.latest_message or "Session failed (no further detail available)"
+            failure_explanation = (
+                session.latest_message or "Session failed (no further detail available)"
+            )
 
         return OutcomeSummary(
             session_id=session.session_id or "unknown",
@@ -772,15 +764,21 @@ def build_app(*, controller: ClawController) -> FastAPI:
             is_active=(profile_id == active_id),
         )
 
-    @app.post("/api/v1/equipment/profiles", response_model=EquipmentProfileResponse, status_code=201)
+    @app.post(
+        "/api/v1/equipment/profiles", response_model=EquipmentProfileResponse, status_code=201
+    )
     def post_equipment_profile(body: dict[str, Any]) -> EquipmentProfileResponse:
         """Create a new equipment profile.  409 on duplicate profile_id, 422 on validation."""
         from datetime import UTC, datetime
+
         from kepler_node.storage.models import EquipmentProfile
 
         if "profile_id" not in body or not body["profile_id"]:
             import re
-            slug = re.sub(r"[^a-z0-9]+", "-", body.get("display_name", "profile").lower()).strip("-")
+
+            slug = re.sub(r"[^a-z0-9]+", "-", body.get("display_name", "profile").lower()).strip(
+                "-"
+            )
             body["profile_id"] = slug or "profile"
 
         if controller.store.read_profile(body["profile_id"]) is not None:
@@ -833,6 +831,7 @@ def build_app(*, controller: ClawController) -> FastAPI:
 
         body["profile_id"] = profile_id
         from datetime import UTC, datetime
+
         body["updated_at"] = datetime.now(UTC).isoformat()
         # Preserve original created_at if not provided in body
         if "created_at" not in body:
@@ -919,8 +918,7 @@ def build_app(*, controller: ClawController) -> FastAPI:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Cannot stage target while session is in state "
-                    f"{controller.session.state!r}"
+                    f"Cannot stage target while session is in state {controller.session.state!r}"
                 ),
             )
 
