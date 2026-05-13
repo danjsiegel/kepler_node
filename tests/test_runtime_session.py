@@ -7,10 +7,12 @@ def test_runtime_session_sets_required_workflow_intents() -> None:
     session.enter_calibrate()
     assert session.state == ClawState.CALIBRATE
     assert session.workflow_intent == WorkflowIntent.CALIBRATION
+    assert session.control_locked is True
 
     session.enter_target_acquired()
     assert session.state == ClawState.TARGET_ACQUIRED
     assert session.workflow_intent == WorkflowIntent.TARGET_CENTERING
+    assert session.control_locked is True
 
     session.enter_capture()
     assert session.state == ClawState.CAPTURE

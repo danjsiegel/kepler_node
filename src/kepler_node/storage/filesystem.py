@@ -62,6 +62,109 @@ class FilesystemSessionStore:
         )
         return frame_dir
 
+    def list_events(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        before_sequence: int | None = None,
+    ) -> tuple[list[EventRecord], int | None]:
+        """Return session events newest-first with optional cursor pagination.
+
+        Returns (page, next_before_sequence).  An unknown cursor raises ValueError.
+        """
+        session_dir = self._resolve_session_dir(session_id)
+        event_path = session_dir / "events.ndjson"
+        if not event_path.exists():
+            return [], None
+
+        records: list[EventRecord] = []
+        for raw in event_path.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if raw:
+                records.append(EventRecord.model_validate_json(raw))
+
+        records.sort(key=lambda r: r.sequence, reverse=True)
+
+        if before_sequence is not None:
+            known = {r.sequence for r in records}
+            if before_sequence not in known:
+                raise ValueError(f"Unknown before_sequence cursor: {before_sequence}")
+            records = [r for r in records if r.sequence < before_sequence]
+
+        page = records[:limit]
+        next_cursor: int | None = records[limit - 1].sequence if len(records) > limit else None
+        return page, next_cursor
+
+    def list_frames(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        before_frame_id: str | None = None,
+    ) -> tuple[list[FrameRecord], str | None]:
+        """Return frame records newest-first with optional cursor pagination.
+
+        Returns (page, next_before_frame_id).  An unknown cursor raises ValueError.
+        """
+        session_dir = self._resolve_session_dir(session_id)
+        frames_dir = session_dir / "frames"
+        if not frames_dir.exists():
+            return [], None
+
+        records: list[FrameRecord] = []
+        for frame_dir in frames_dir.iterdir():
+            frame_json = frame_dir / "frame.json"
+            if frame_json.exists():
+                records.append(
+                    FrameRecord.model_validate_json(frame_json.read_text(encoding="utf-8"))
+                )
+
+        records.sort(key=lambda r: r.capture_timestamp, reverse=True)
+
+        if before_frame_id is not None:
+            ids = [r.frame_id for r in records]
+            if before_frame_id not in ids:
+                raise ValueError(f"Unknown before_frame_id cursor: {before_frame_id}")
+            idx = ids.index(before_frame_id)
+            records = records[idx + 1 :]
+
+        page = records[:limit]
+        next_cursor: str | None = records[limit - 1].frame_id if len(records) > limit else None
+        return page, next_cursor
+
+    def list_artifacts(self, session_id: str) -> list[dict]:
+        """Return typed artifact summaries aggregated from all frame records.
+
+        Frames are visited in ascending capture-time order; callers may re-sort.
+        """
+        session_dir = self._resolve_session_dir(session_id)
+        frames_dir = session_dir / "frames"
+        if not frames_dir.exists():
+            return []
+
+        frames: list[FrameRecord] = []
+        for frame_dir in frames_dir.iterdir():
+            frame_json = frame_dir / "frame.json"
+            if frame_json.exists():
+                frames.append(
+                    FrameRecord.model_validate_json(frame_json.read_text(encoding="utf-8"))
+                )
+
+        frames.sort(key=lambda r: r.capture_timestamp)
+
+        result: list[dict] = []
+        for frame in frames:
+            for artifact in frame.artifact_references:
+                created_at = artifact.created_at or frame.capture_timestamp
+                result.append({
+                    "artifact_kind": artifact.artifact_kind,
+                    "relative_path": artifact.relative_path,
+                    "frame_id": frame.frame_id,
+                    "created_at": created_at.isoformat(),
+                })
+        return result
+
     def _resolve_session_dir(self, session_id: str) -> Path:
         """Resolve a session directory from the canonical sessions root."""
 

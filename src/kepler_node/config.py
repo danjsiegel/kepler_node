@@ -31,3 +31,7 @@ class Settings(BaseSettings):
     # Phase 2: INDI server connection
     indiserver_host: str = "localhost"
     indiserver_port: int = 7624
+
+    # Phase 4: local API server
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000

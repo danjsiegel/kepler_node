@@ -228,15 +228,12 @@ def confirm_time_action(
 ) -> TimeStatus:
     """Agent-layer action for POST /api/v1/time/confirm.
 
-    Fails closed if the session holds control lock or is in an active
-    motion/capture state.  Enforces the v1 rule that operator-confirmed time
-    must not be applied while mount motion or capture is underway.
+    Raises ValueError when the session is in an active motion or capture
+    state so that the API layer can map the rejection to 409 Conflict per
+    the v1 invalid-state error contract.
     """
     if session.state in _ACTIVE_MOTION_CAPTURE_STATES:
-        return TimeStatus(
-            trusted=False,
-            source=TimeSource.UNTRUSTED,
-            summary=("rejected: time confirmation is not safe during active motion or capture"),
-            observed_at=datetime.now(UTC),
+        raise ValueError(
+            f"time confirmation is not safe during active motion or capture (state={session.state.value})"
         )
     return backend.confirm_time(timestamp)

@@ -473,7 +473,7 @@ class ClawController:
                             "session failed: terminal storage failure during capture"
                         )
                     finally:
-                        self._teardown_session_resources()
+                        self._release_session_resources()
                     return self._make_transition(
                         prev,
                         ClawState.FAILED,
@@ -539,7 +539,7 @@ class ClawController:
             try:
                 self._persist_terminal_outcome("capture run complete")
             finally:
-                self._teardown_session_resources()
+                self._release_session_resources()
             return self._make_transition(prev, ClawState.COMPLETED, "capture run complete")
 
         # All blocking conditions (storage, time, power) prevent the next frame.
@@ -1202,8 +1202,38 @@ class ClawController:
         try:
             self._persist_terminal_outcome("session stopped by operator")
         finally:
-            self._teardown_session_resources()
+            self._release_session_resources()
         return self._make_transition(prev, ClawState.COMPLETED, "session stopped by operator")
+
+    def pause(self) -> TransitionResult:
+        """Pause the active managed session through the canonical transition path."""
+        if self.session.state == ClawState.PAUSED:
+            return TransitionResult(
+                previous_state=ClawState.PAUSED,
+                next_state=ClawState.PAUSED,
+                message="session already paused",
+                details={
+                    "workflow_intent": (
+                        self.session.workflow_intent.value
+                        if self.session.workflow_intent
+                        else None
+                    ),
+                    "control_locked": self.session.control_locked,
+                },
+            )
+        if self.session.state in {ClawState.BOOT, ClawState.DISCOVER, ClawState.CONNECT, ClawState.READY}:
+            raise ValueError("No active managed session to pause")
+        if self.session.is_terminal:
+            raise ValueError("Cannot pause a terminal session")
+
+        workflow_intent = self.session.workflow_intent or WorkflowIntent.CALIBRATION
+        prev = self.session.state
+        self.session.pause(
+            pause_reason="operator pause request",
+            resume_state=prev,
+            workflow_intent=workflow_intent,
+        )
+        return self._make_transition(prev, ClawState.PAUSED, "session paused by operator")
 
     def fail(self, *, reason: str = "unrecoverable failure") -> TransitionResult:
         """Transition the session to FAILED.  Emits SESSION_OUTCOME and persists."""
@@ -1212,7 +1242,7 @@ class ClawController:
         try:
             self._persist_terminal_outcome(f"session failed: {reason}")
         finally:
-            self._teardown_session_resources()
+            self._release_session_resources()
         return self._make_transition(prev, ClawState.FAILED, f"session failed: {reason}")
 
     def release_control(self) -> TransitionResult:
@@ -1222,10 +1252,81 @@ class ClawController:
         try:
             self._persist_terminal_outcome("control released by operator")
         finally:
-            self._teardown_session_resources()
+            self._release_session_resources()
         return self._make_transition(prev, ClawState.COMPLETED, "control released by operator")
 
-    def _teardown_session_resources(self) -> None:
+    def acknowledge_complete(self) -> TransitionResult:
+        """Acknowledge a completed session and return the node to ready.
+
+        Valid only from COMPLETED.  Emits a STATE_TRANSITION event and
+        resets the in-memory session so the node can accept a new workflow.
+
+        The transition event is emitted *before* session_id is cleared so
+        that it is written to the session's events.ndjson rather than the
+        node-level buffer (spec lines 911-916).
+        """
+        if self.session.state != ClawState.COMPLETED:
+            raise ValueError("acknowledge_complete is only valid from the completed state")
+        prev = self.session.state
+        # Emit while session_id is still set, then clear in-memory state.
+        result = self._make_transition(prev, ClawState.READY, "completed session acknowledged; node returned to ready")
+        self.session.acknowledge_complete()
+        return result
+
+    def begin_calibrate(self) -> TransitionResult:
+        """Transition to CALIBRATE state without running the full verification loop.
+
+        Used by the API endpoint so the caller can trigger calibration as a fast
+        state-change action rather than a synchronous long-running operation.
+
+        Raises RuntimeError when readiness blockers exist (so the API can map to 422).
+        Valid only from READY or TARGET_ACQUIRED.
+        """
+        valid_states = {ClawState.READY, ClawState.TARGET_ACQUIRED}
+        if self.session.state not in valid_states:
+            raise ValueError(
+                f"begin_calibrate is only valid from ready or target_acquired, "
+                f"current state: {self.session.state}"
+            )
+        blockers = self.check_readiness()
+        if blockers:
+            raise RuntimeError(f"calibrate blocked: {blockers[0].name}")
+        prev = self.session.state
+        self.session.enter_calibrate()
+        self.session.reset_verification_counters()
+        return self._make_transition(prev, ClawState.CALIBRATE, "entering calibration")
+
+    def clear_failure(self) -> TransitionResult:
+        """Clear a failed session after operator review and return the node to ready.
+
+        Valid only from FAILED.  Fails with ValueError when active blocking
+        conditions (storage_critically_low, power_integrity_warning) still
+        require the node to remain in the failed state so the API layer can
+        map those to 422.
+
+        The transition event is emitted *before* session_id is cleared so
+        that it is written to the session's events.ndjson rather than the
+        node-level buffer (spec lines 912-916).
+        """
+        if self.session.state != ClawState.FAILED:
+            raise ValueError("clear_failure is only valid from the failed state")
+        blockers = self.check_readiness()
+        hardware_blocks = [
+            b for b in blockers
+            if b.name in {"storage_critically_low", "power_integrity_warning"}
+        ]
+        if hardware_blocks:
+            names = ", ".join(b.name for b in hardware_blocks)
+            raise RuntimeError(
+                f"cannot clear failure while active hardware conditions require failed: {names}"
+            )
+        prev = self.session.state
+        # Emit while session_id is still set, then clear in-memory state.
+        result = self._make_transition(prev, ClawState.READY, "failed session cleared; node returned to ready")
+        self.session.clear_failure()
+        return result
+
+    def _release_session_resources(self) -> None:
         """Release camera-session resources and clean up temporary verification artifacts.
 
         Called on all terminal paths.  Each step is best-effort so resource
@@ -1321,6 +1422,7 @@ class ClawController:
             details=merged,
             prev_state=prev,
         )
+        self.session.latest_message = message
         return TransitionResult(
             previous_state=prev,
             next_state=next_state,

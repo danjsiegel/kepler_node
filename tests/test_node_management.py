@@ -327,16 +327,14 @@ def test_confirm_time_action_passes_through_when_session_idle(
 
 
 def test_confirm_time_action_rejects_when_control_locked(tmp_path: Path) -> None:
-    # CAPTURE is in _ACTIVE_MOTION_CAPTURE_STATES so it is rejected regardless of
-    # control_locked; the state check is what matters.
+    # CAPTURE is in _ACTIVE_MOTION_CAPTURE_STATES so it raises ValueError
+    # regardless of control_locked; the API layer maps this to 409.
     session = RuntimeSession(state=ClawState.CAPTURE, control_locked=True)
     backend = _make_backend(tmp_path)
     valid_ts = datetime(2026, 5, 11, 22, 0, 0, tzinfo=UTC)
 
-    status = confirm_time_action(session=session, backend=backend, timestamp=valid_ts)
-
-    assert status.trusted is False
-    assert "not safe during active motion" in status.summary
+    with pytest.raises(ValueError, match="not safe during active motion or capture"):
+        confirm_time_action(session=session, backend=backend, timestamp=valid_ts)
 
 
 def test_confirm_time_action_allows_paused_session(tmp_path: Path) -> None:
@@ -354,15 +352,13 @@ def test_confirm_time_action_allows_paused_session(tmp_path: Path) -> None:
 
 
 def test_confirm_time_action_rejects_recover_state(tmp_path: Path) -> None:
-    # RECOVER may involve mount motion; time confirmation must be blocked.
+    # RECOVER may involve mount motion; time confirmation must raise ValueError.
     session = RuntimeSession(state=ClawState.RECOVER, control_locked=False)
     backend = _make_backend(tmp_path)
     valid_ts = datetime(2026, 5, 11, 22, 0, 0, tzinfo=UTC)
 
-    status = confirm_time_action(session=session, backend=backend, timestamp=valid_ts)
-
-    assert status.trusted is False
-    assert "not safe" in status.summary
+    with pytest.raises(ValueError, match="not safe during active motion or capture"):
+        confirm_time_action(session=session, backend=backend, timestamp=valid_ts)
 
 
 @pytest.mark.parametrize("state", sorted(_ACTIVE_MOTION_CAPTURE_STATES, key=str))
@@ -371,10 +367,8 @@ def test_confirm_time_action_rejects_active_motion_states(state: ClawState, tmp_
     backend = _make_backend(tmp_path)
     valid_ts = datetime(2026, 5, 11, 22, 0, 0, tzinfo=UTC)
 
-    status = confirm_time_action(session=session, backend=backend, timestamp=valid_ts)
-
-    assert status.trusted is False
-    assert "not safe" in status.summary
+    with pytest.raises(ValueError, match="not safe during active motion or capture"):
+        confirm_time_action(session=session, backend=backend, timestamp=valid_ts)
 
 
 def test_confirm_time_action_satisfies_node_management_backend_protocol(

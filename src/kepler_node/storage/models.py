@@ -26,6 +26,7 @@ class ArtifactReference(BaseModel):
     artifact_kind: ArtifactKind
     relative_path: str
     source_frame_id: str | None = None
+    created_at: datetime | None = None
 
 
 class SessionScope(StrEnum):

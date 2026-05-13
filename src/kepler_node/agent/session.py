@@ -86,6 +86,9 @@ class RuntimeSession(BaseModel):
     last_residual_arcmin: float | None = None
     last_solve_failure_category: str | None = None
 
+    # Latest plain-language transition message (updated by ClawController on every transition)
+    latest_message: str | None = None
+
     # Runtime retry counters (reset on fresh workflows; persisted into events)
     solve_attempts: int = 0
     calibration_loop_count: int = 0
@@ -100,16 +103,18 @@ class RuntimeSession(BaseModel):
         return self.state in {ClawState.COMPLETED, ClawState.FAILED}
 
     def enter_calibrate(self) -> None:
-        """Enter calibration flow and set its required workflow intent."""
+        """Enter calibration flow, set workflow intent, and claim control lock."""
 
         self.state = ClawState.CALIBRATE
         self.workflow_intent = WorkflowIntent.CALIBRATION
+        self.control_locked = True
 
     def enter_target_acquired(self) -> None:
-        """Enter target-centering flow and set its required workflow intent."""
+        """Enter target-centering flow, set workflow intent, and claim control lock."""
 
         self.state = ClawState.TARGET_ACQUIRED
         self.workflow_intent = WorkflowIntent.TARGET_CENTERING
+        self.control_locked = True
 
     def enter_capture(self) -> None:
         """Enter capture flow and mark Kepler as the control owner."""
@@ -119,9 +124,10 @@ class RuntimeSession(BaseModel):
         self.control_locked = True
 
     def enter_recover(self) -> None:
-        """Transition to the recover state."""
+        """Transition to the recover state and claim control lock."""
 
         self.state = ClawState.RECOVER
+        self.control_locked = True
 
     def stage_target(
         self,
@@ -137,6 +143,7 @@ class RuntimeSession(BaseModel):
         self.staged_target_id = target_id
         self.state = ClawState.TARGET_ACQUIRED
         self.workflow_intent = WorkflowIntent.TARGET_CENTERING
+        self.control_locked = True
 
     def accept_calibration(self) -> None:
         """Mark calibration as accepted and reset its loop counters."""
@@ -205,3 +212,32 @@ class RuntimeSession(BaseModel):
         self.workflow_intent = None
         self.state = ClawState.FAILED
         self.terminal_outcome = TerminalOutcome.FAILED
+
+    def acknowledge_complete(self) -> None:
+        """Acknowledge a completed session and return the node to ready.
+
+        Valid only from COMPLETED.  Clears terminal metadata so the node
+        can accept a new workflow without losing the stored session record.
+        """
+        if self.state != ClawState.COMPLETED:
+            raise ValueError("acknowledge_complete is only valid from the completed state")
+
+        self.state = ClawState.READY
+        self.terminal_outcome = None
+        self.workflow_intent = None
+        self.session_id = None
+
+    def clear_failure(self) -> None:
+        """Clear a failed session after operator review and return the node to ready.
+
+        Valid only from FAILED.  The API layer is responsible for verifying
+        that active blocking conditions no longer require the failed state
+        before calling this method; the session layer just performs the transition.
+        """
+        if self.state != ClawState.FAILED:
+            raise ValueError("clear_failure is only valid from the failed state")
+
+        self.state = ClawState.READY
+        self.terminal_outcome = None
+        self.workflow_intent = None
+        self.session_id = None
