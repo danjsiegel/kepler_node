@@ -24,6 +24,14 @@ flowchart LR
 - Keep package boundaries generic so concrete adapters can be swapped later
 - Prefer Python for orchestration, control flow, and data handling
 
+## Client Model
+
+Kepler is intended to run as the node-side control plane.
+
+Remote planners such as KStars/Ekos can supply target intent and operator workflow around the node, but Kepler still owns local verification, correction, capture control, and recovery.
+
+The Pi should stay a field-ready node first, not a desktop astronomy workstation by default.
+
 ## Domain Layout
 
 - `kepler_node.agent`: orchestration and state-machine logic

@@ -97,7 +97,9 @@ def _show_degraded(degraded: list[dict[str, Any]]) -> None:
 # Tabs                                                                 #
 # ------------------------------------------------------------------ #
 
-overview_tab, session_tab, review_tab = st.tabs(["Overview", "Session", "Review"])
+overview_tab, equipment_tab, target_tab, session_tab, review_tab = st.tabs(
+    ["Overview", "Equipment", "Target", "Session", "Review"]
+)
 
 
 # ===================================================================  #
@@ -233,10 +235,214 @@ with overview_tab:
         else:
             st.info("Resolve blocking issues above before starting calibration.")
 
+    # --- Planner mode ---
+    planner_mode = node_status.get("planner_mode")
+    planner_conn = node_status.get("planner_connection_details")
+    if planner_mode:
+        st.divider()
+        st.subheader("🔭 Planner Mode")
+        mode_label = {
+            "headless-node": "Headless Node (remote KStars/Ekos)",
+            "field-fallback": "Field Fallback (on-node KStars + xRDP)",
+        }.get(planner_mode, planner_mode)
+        st.metric("Mode", mode_label)
+        if planner_conn:
+            st.info(planner_conn.get("summary", ""))
+            if planner_conn.get("indi_port"):
+                st.code(f"INDI server port: {planner_conn['indi_port']}")
+            if planner_conn.get("rdp_port"):
+                st.code(f"xRDP port: {planner_conn['rdp_port']}")
+
+    # --- Node build info ---
+    inst = node_status.get("install_manifest")
+    if inst:
+        st.divider()
+        st.caption(
+            f"Build: {inst.get('kepler_version', '—')} · "
+            f"Profile: {inst.get('bootstrap_profile', '—')} · "
+            f"Installed: {inst.get('installed_at', '—')}"
+        )
+
 
 # ===================================================================  #
-# SESSION                                                               #
+# EQUIPMENT                                                             #
 # ===================================================================  #
+
+with equipment_tab:
+    st.header("Equipment Profiles")
+    client = _client()
+
+    try:
+        profiles_resp = client.get_equipment_profiles()
+    except Exception as exc:
+        st.error(f"Cannot reach Kepler API: {exc}")
+        st.stop()
+
+    profiles = profiles_resp.get("profiles", [])
+    active_profile_id = profiles_resp.get("active_profile_id")
+
+    if not profiles:
+        st.info("No equipment profiles configured.  Add one below.")
+    else:
+        for prof in profiles:
+            pid = prof.get("profile_id", "")
+            name = prof.get("display_name", pid)
+            is_active = pid == active_profile_id
+            is_default = prof.get("is_default", False)
+
+            label = f"{'✅ ' if is_active else ''}**{name}**"
+            if is_default:
+                label += " _(default)_"
+            hw = prof.get("hardware_summary", {})
+            detail = (
+                f"Mount: {hw.get('mount_model', '—')} · "
+                f"Camera: {hw.get('camera_make', '')} {hw.get('camera_model', '—')} · "
+                f"Lens: {hw.get('lens_model', '—')}"
+                + (" ⚠️ Zoom" if hw.get("lens_is_zoom") else "")
+            )
+
+            with st.expander(label):
+                st.caption(detail)
+                if not is_active:
+                    if st.button(f"Select {name!r}", key=f"select_profile_{pid}"):
+                        try:
+                            client.post_equipment_profile_select(pid)
+                            st.success(f"Profile {name!r} is now active")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(str(exc))
+                else:
+                    st.success("Currently active profile")
+
+    st.divider()
+    st.subheader("Add Profile (JSON)")
+    st.caption("Paste a valid EquipmentProfile JSON document to import a profile.")
+    profile_json_input = st.text_area("Profile JSON", height=200, key="profile_json_input")
+    if st.button("➕ Add Profile", key="add_profile_btn"):
+        import json as _json
+
+        try:
+            body = _json.loads(profile_json_input)
+            resp = client.post_equipment_profile(body)
+            st.success(
+                f"Profile {resp.get('profile', {}).get('display_name', 'imported')!r} added"
+            )
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+
+# ===================================================================  #
+# TARGET                                                                #
+# ===================================================================  #
+
+with target_tab:
+    st.header("Target & Session Start")
+    client = _client()
+
+    try:
+        node_status_t = client.get_node_status()
+        current_target = client.get_target_current()
+    except Exception as exc:
+        st.error(f"Cannot reach Kepler API: {exc}")
+        st.stop()
+
+    current_state_t = node_status_t.get("state", "")
+    active_prof_t = node_status_t.get("active_equipment_profile")
+
+    # Show active equipment profile context
+    if active_prof_t:
+        st.caption(
+            f"Active profile: **{active_prof_t.get('display_name', '—')}** · "
+            f"Focal length: {active_prof_t.get('focal_length_mm', '—')} mm"
+            + (" ⚠️ Zoom lens — focal length assumption required" if active_prof_t.get('lens_is_zoom') else "")
+        )
+    else:
+        st.warning("No equipment profile selected.  Go to the Equipment tab first.")
+
+    # Current staged target
+    if current_target:
+        st.subheader("Staged Target")
+        col_tl, col_ra, col_dec = st.columns(3)
+        with col_tl:
+            st.metric("Target", current_target.get("target_label", "—"))
+        with col_ra:
+            st.metric("RA (h)", f"{current_target.get('ra_hours', 0):.4f}")
+        with col_dec:
+            st.metric("Dec (°)", f"{current_target.get('dec_deg', 0):.4f}")
+        st.caption(f"Source: {current_target.get('target_source', '—')}")
+
+        if st.button("🗑 Clear Target", key="clear_target_btn"):
+            try:
+                client.delete_target_current()
+                st.success("Target cleared")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+        if current_state_t == "ready":
+            st.divider()
+            st.subheader("▶ Start Session")
+            run_params = current_target.get("run_parameters", {})
+            has_run_params = bool(
+                run_params.get("exposure_seconds")
+                and run_params.get("camera_settings")
+                and run_params.get("stop_condition")
+            )
+            if not has_run_params:
+                st.warning("Run parameters (exposure_seconds, camera_settings, stop_condition) are required.")
+            else:
+                if st.button("🚀 Start Session", key="start_session_btn"):
+                    try:
+                        resp = client.post_session_start()
+                        st.success(resp.get("message", "Session started"))
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+        elif current_state_t in {
+            "target_acquired", "test_capture", "solve", "correct",
+            "center_verify", "capture", "guard", "recover",
+        }:
+            st.info("Session in progress.  See the Session tab for controls.")
+    else:
+        st.info("No target staged.")
+
+    st.divider()
+    st.subheader("Stage a Target")
+
+    with st.form("stage_target_form"):
+        target_label = st.text_input("Target Name", placeholder="e.g. M31")
+        ra_hours = st.number_input("RA (hours)", min_value=0.0, max_value=24.0, step=0.001, format="%.4f")
+        dec_deg = st.number_input("Dec (degrees)", min_value=-90.0, max_value=90.0, step=0.001, format="%.4f")
+        target_source = st.selectbox("Source", ["manual", "kstars_ekos", "catalog"], index=0)
+
+        st.markdown("**Run Parameters**")
+        exposure_seconds = st.number_input("Exposure (seconds)", min_value=1.0, step=1.0, value=120.0)
+        gain = st.number_input("Camera Gain", min_value=0, step=1, value=100)
+        frame_count = st.number_input("Frame Count Limit", min_value=1, step=1, value=60)
+
+        submitted = st.form_submit_button("📡 Stage Target")
+        if submitted:
+            if not target_label.strip():
+                st.error("Target name is required.")
+            else:
+                body = {
+                    "target_label": target_label.strip(),
+                    "ra_hours": ra_hours,
+                    "dec_deg": dec_deg,
+                    "target_source": target_source,
+                    "run_parameters": {
+                        "exposure_seconds": exposure_seconds,
+                        "camera_settings": {"gain": gain},
+                        "stop_condition": {"frame_count": int(frame_count)},
+                    },
+                }
+                try:
+                    client.post_target(body)
+                    st.success(f"Target {target_label!r} staged")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
 
 with session_tab:
     st.header("Session")

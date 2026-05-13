@@ -43,6 +43,14 @@ def _make_mock_client() -> MagicMock:
         },
         "storage_status": {},
         "power_status": {},
+        "network_mode": "isolated",
+        "time_certainty": {"trusted": True, "source": "ntp", "summary": "ok"},
+        "power_integrity": {"healthy": True, "undervoltage_detected": False, "summary": "ok"},
+        "build_summary": "kepler-node v1",
+        "active_equipment_profile": None,
+        "planner_mode": None,
+        "planner_connection_details": None,
+        "install_manifest": None,
     }
     # No active session
     client.get_session_current.return_value = None
@@ -50,6 +58,10 @@ def _make_mock_client() -> MagicMock:
     client.get_session_outcome.return_value = None
     client.get_session_frames.return_value = {"frames": [], "next_before_frame_id": None}
     client.get_session_artifacts.return_value = {"artifacts": []}
+    # Equipment profiles
+    client.get_equipment_profiles.return_value = {"profiles": [], "active_profile_id": None}
+    # Target
+    client.get_target_current.return_value = None
     return client
 
 
@@ -72,16 +84,18 @@ def _run_app_with_mock_client(mock_client: MagicMock) -> AppTest:
 
 
 def test_all_three_tabs_render_in_no_active_session_posture() -> None:
-    """Overview, Session, and Review tabs all render without raising or
-    calling st.stop() when the node is ready and no session is active."""
+    """All five tabs (Overview, Equipment, Target, Session, Review) render without
+    raising or calling st.stop() when the node is ready and no session is active."""
     at = _run_app_with_mock_client(_make_mock_client())
 
     # No exception during rendering
     assert not at.exception, f"Streamlit app raised: {at.exception}"
 
-    # All three top-level tab headers must appear
+    # All five top-level tab headers must appear
     headers = [h.value for h in at.header]
     assert "Overview" in headers, f"Overview header missing; found: {headers}"
+    assert "Equipment Profiles" in headers, f"Equipment Profiles header missing; found: {headers}"
+    assert "Target & Session Start" in headers, f"Target & Session Start header missing; found: {headers}"
     assert "Session" in headers, f"Session header missing; found: {headers}"
     assert "Review" in headers, f"Review header missing; found: {headers}"
 

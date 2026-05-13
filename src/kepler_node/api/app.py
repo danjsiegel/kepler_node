@@ -26,6 +26,9 @@ from kepler_node.api.models import (
     ArtifactListResponse,
     ArtifactSummary,
     BlockerCondition,
+    EquipmentProfileListResponse,
+    EquipmentProfileResponse,
+    EquipmentProfileSummary,
     EventListResponse,
     EventSummary,
     FrameListResponse,
@@ -36,6 +39,8 @@ from kepler_node.api.models import (
     ReadinessResponse,
     SessionStateResponse,
     SessionSummaryResponse,
+    TargetCurrentResponse,
+    TargetRequest,
     TimeConfirmRequest,
     TimeConfirmResponse,
 )
@@ -221,6 +226,65 @@ def build_app(*, controller: ClawController) -> FastAPI:
         power_status = controller.node.power_status()
         network_mode = controller.node.network_mode()
 
+        # Install manifest summary
+        manifest = controller.store.read_install_manifest()
+        install_manifest_summary: dict[str, Any] | None = None
+        if manifest is not None:
+            install_manifest_summary = {
+                "kepler_version": manifest.kepler_version,
+                "release_id": manifest.release_id,
+                "bootstrap_profile": manifest.bootstrap_profile,
+                "installed_at": manifest.installed_at.isoformat(),
+                "last_upgrade_at": (
+                    manifest.last_upgrade_at.isoformat()
+                    if manifest.last_upgrade_at
+                    else None
+                ),
+                "last_upgrade_result": manifest.last_upgrade_result,
+            }
+
+        # Active equipment profile summary
+        profile = controller.active_equipment_profile
+        profile_summary: dict[str, Any] | None = None
+        if profile is not None:
+            profile_summary = {
+                "profile_id": profile.profile_id,
+                "display_name": profile.display_name,
+                "lens_is_zoom": profile.hardware.lens.is_zoom,
+                "focal_length_mm": (
+                    profile.solving_hints.focal_length_assumption_mm
+                    or profile.hardware.lens.default_focal_length_mm
+                ),
+            }
+
+        # Planner mode derived from bootstrap profile
+        planner_mode: str | None = None
+        planner_connection: dict[str, Any] | None = None
+        if manifest is not None and manifest.bootstrap_profile:
+            planner_mode = manifest.bootstrap_profile
+            if planner_mode == "headless-node":
+                planner_connection = {
+                    "mode": "remote_kstars_ekos",
+                    "summary": (
+                        "Connect KStars/Ekos remotely: set INDI server host to this "
+                        "node's IP address and port 7624"
+                    ),
+                    "indi_port": 7624,
+                }
+            elif planner_mode == "field-fallback":
+                planner_connection = {
+                    "mode": "on_node_kstars_ekos",
+                    "summary": (
+                        "Launch KStars/Ekos on this node via xRDP remote desktop: "
+                        "connect to this node's IP address on port 3389 (RDP)"
+                    ),
+                    "rdp_port": 3389,
+                }
+
+        build_summary = "kepler-node v1"
+        if manifest is not None:
+            build_summary = f"kepler-node {manifest.kepler_version}"
+
         return NodeStatusResponse(
             state=controller.session.state,
             workflow_intent=(
@@ -241,6 +305,11 @@ def build_app(*, controller: ClawController) -> FastAPI:
                 "summary": power_status.summary,
             },
             detected_devices=_get_detected_devices(controller),
+            build_summary=build_summary,
+            active_equipment_profile=profile_summary,
+            planner_mode=planner_mode,
+            planner_connection_details=planner_connection,
+            install_manifest=install_manifest_summary,
         )
 
     # ------------------------------------------------------------------ #
@@ -652,5 +721,270 @@ def build_app(*, controller: ClawController) -> FastAPI:
             for r in records
         ]
         return EventListResponse(events=events, next_before_sequence=next_cursor)
+
+    # ------------------------------------------------------------------ #
+    # Equipment profile endpoints                                          #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/api/v1/equipment/profiles", response_model=EquipmentProfileListResponse)
+    def get_equipment_profiles() -> EquipmentProfileListResponse:
+        """List all stored equipment profiles."""
+        profiles = controller.store.list_profiles()
+        active_id = (
+            controller.active_equipment_profile.profile_id
+            if controller.active_equipment_profile
+            else None
+        )
+        summaries = [
+            EquipmentProfileSummary(
+                profile_id=p.profile_id,
+                display_name=p.display_name,
+                is_default=p.is_default,
+                hardware_summary={
+                    "mount_model": p.hardware.mount.model,
+                    "camera_make": p.hardware.camera.make,
+                    "camera_model": p.hardware.camera.model,
+                    "lens_model": p.hardware.lens.model,
+                    "lens_is_zoom": p.hardware.lens.is_zoom,
+                },
+                updated_at=p.updated_at,
+            )
+            for p in profiles
+        ]
+        return EquipmentProfileListResponse(profiles=summaries, active_profile_id=active_id)
+
+    @app.get(
+        "/api/v1/equipment/profiles/{profile_id}",
+        response_model=EquipmentProfileResponse,
+    )
+    def get_equipment_profile(profile_id: str) -> EquipmentProfileResponse:
+        """Full equipment profile document.  404 when not found."""
+        profile = controller.store.read_profile(profile_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail=f"Profile {profile_id!r} not found")
+        active_id = (
+            controller.active_equipment_profile.profile_id
+            if controller.active_equipment_profile
+            else None
+        )
+        return EquipmentProfileResponse(
+            profile=profile.model_dump(mode="json"),
+            is_active=(profile_id == active_id),
+        )
+
+    @app.post("/api/v1/equipment/profiles", response_model=EquipmentProfileResponse, status_code=201)
+    def post_equipment_profile(body: dict[str, Any]) -> EquipmentProfileResponse:
+        """Create a new equipment profile.  409 on duplicate profile_id, 422 on validation."""
+        from datetime import UTC, datetime
+        from kepler_node.storage.models import EquipmentProfile
+
+        if "profile_id" not in body or not body["profile_id"]:
+            import re
+            slug = re.sub(r"[^a-z0-9]+", "-", body.get("display_name", "profile").lower()).strip("-")
+            body["profile_id"] = slug or "profile"
+
+        if controller.store.read_profile(body["profile_id"]) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Profile {body['profile_id']!r} already exists",
+            )
+
+        now = datetime.now(UTC)
+        body.setdefault("created_at", now.isoformat())
+        body.setdefault("updated_at", now.isoformat())
+
+        try:
+            profile = EquipmentProfile.model_validate(body)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        controller.store.write_profile(profile)
+        return EquipmentProfileResponse(profile=profile.model_dump(mode="json"), is_active=False)
+
+    @app.put(
+        "/api/v1/equipment/profiles/{profile_id}",
+        response_model=EquipmentProfileResponse,
+    )
+    def put_equipment_profile(profile_id: str, body: dict[str, Any]) -> EquipmentProfileResponse:
+        """Replace an equipment profile.  404 when not found, 409 during active session."""
+        from kepler_node.storage.models import EquipmentProfile
+
+        existing = controller.store.read_profile(profile_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail=f"Profile {profile_id!r} not found")
+
+        if "profile_id" in body and body["profile_id"] != profile_id:
+            raise HTTPException(
+                status_code=422,
+                detail="profile_id in body must match path value",
+            )
+
+        # Block edit of active profile while session is in progress
+        active_id = (
+            controller.active_equipment_profile.profile_id
+            if controller.active_equipment_profile
+            else None
+        )
+        if profile_id == active_id and controller.session.state not in _PRE_SESSION_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot edit active profile while a managed session is in progress",
+            )
+
+        body["profile_id"] = profile_id
+        from datetime import UTC, datetime
+        body["updated_at"] = datetime.now(UTC).isoformat()
+        # Preserve original created_at if not provided in body
+        if "created_at" not in body:
+            body["created_at"] = existing.created_at.isoformat()
+
+        try:
+            profile = EquipmentProfile.model_validate(body)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        controller.store.write_profile(profile)
+
+        # If this is the active profile, refresh in-memory state and clear
+        # stale calibration so readiness blockers reflect the new configuration
+        # immediately (spec line 1631).
+        if profile_id == active_id:
+            controller.active_equipment_profile = profile
+            controller.session.calibration_accepted = False
+
+        return EquipmentProfileResponse(
+            profile=profile.model_dump(mode="json"),
+            is_active=(profile_id == active_id),
+        )
+
+    @app.post(
+        "/api/v1/equipment/profiles/{profile_id}/select",
+        response_model=ActionResponse,
+    )
+    def post_equipment_profile_select(profile_id: str) -> ActionResponse:
+        """Select a profile as active.  409 during active managed session, 404 when not found."""
+        if controller.session.state not in _PRE_SESSION_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change active profile while a managed session is in progress",
+            )
+
+        profile = controller.store.read_profile(profile_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail=f"Profile {profile_id!r} not found")
+
+        controller.active_equipment_profile = profile
+        return _action_resp(controller, f"Active profile set to {profile.display_name!r}")
+
+    # ------------------------------------------------------------------ #
+    # Target intake endpoints                                              #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/api/v1/target/current", response_model=TargetCurrentResponse | None)
+    def get_target_current() -> TargetCurrentResponse | None:
+        """Return the staged target, or null when no target is staged."""
+        session = controller.session
+        if session.staged_target_ra_hours is None:
+            return None
+        return TargetCurrentResponse(
+            target_label=controller._staged_target_label,
+            ra_hours=session.staged_target_ra_hours,
+            dec_deg=session.staged_target_dec_deg,
+            target_source=controller._staged_target_source,
+            run_parameters=controller._staged_run_parameters,
+            active_equipment_profile_id=(
+                controller.active_equipment_profile.profile_id
+                if controller.active_equipment_profile
+                else None
+            ),
+        )
+
+    @app.post("/api/v1/target", response_model=TargetCurrentResponse)
+    def post_target(body: TargetRequest) -> TargetCurrentResponse:
+        """Stage a target for the next session.  Replaces any previously staged target.
+
+        Not valid once active centering or capture has begun.
+        """
+        _active_centering_or_capture = {
+            ClawState.TARGET_ACQUIRED,
+            ClawState.TEST_CAPTURE,
+            ClawState.SOLVE,
+            ClawState.CORRECT,
+            ClawState.CENTER_VERIFY,
+            ClawState.CAPTURE,
+            ClawState.GUARD,
+            ClawState.RECOVER,
+        }
+        if controller.session.state in _active_centering_or_capture:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot stage target while session is in state "
+                    f"{controller.session.state!r}"
+                ),
+            )
+
+        controller.stage_target_intake(
+            target_label=body.target_label,
+            ra_hours=body.ra_hours,
+            dec_deg=body.dec_deg,
+            target_source=body.target_source,
+            run_parameters=body.run_parameters,
+        )
+
+        return TargetCurrentResponse(
+            target_label=controller._staged_target_label,
+            ra_hours=controller.session.staged_target_ra_hours,
+            dec_deg=controller.session.staged_target_dec_deg,
+            target_source=controller._staged_target_source,
+            run_parameters=controller._staged_run_parameters,
+            active_equipment_profile_id=(
+                controller.active_equipment_profile.profile_id
+                if controller.active_equipment_profile
+                else None
+            ),
+        )
+
+    @app.delete("/api/v1/target/current", response_model=ActionResponse)
+    def delete_target_current() -> ActionResponse:
+        """Clear the staged target.  409 during active centering/capture, 200 when none staged."""
+        _active_centering_or_capture = {
+            ClawState.TARGET_ACQUIRED,
+            ClawState.TEST_CAPTURE,
+            ClawState.SOLVE,
+            ClawState.CORRECT,
+            ClawState.CENTER_VERIFY,
+            ClawState.CAPTURE,
+            ClawState.GUARD,
+            ClawState.RECOVER,
+        }
+        if controller.session.state in _active_centering_or_capture:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot clear target during active centering or capture",
+            )
+        controller.clear_staged_target()
+        return _action_resp(controller, "Staged target cleared")
+
+    # ------------------------------------------------------------------ #
+    # POST /api/v1/session/start                                           #
+    # ------------------------------------------------------------------ #
+
+    @app.post("/api/v1/session/start", response_model=ActionResponse)
+    def post_session_start() -> ActionResponse:
+        """Start a managed session from a staged target.
+
+        Valid only from ``ready`` with staged target + run parameters, trusted
+        time, and no readiness blockers.  409 for wrong state, 422 for
+        readiness or run-parameter failures.
+        """
+        try:
+            result = controller.start_session()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return _action_resp(controller, result.message)
 
     return app

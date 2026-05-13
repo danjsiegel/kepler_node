@@ -30,7 +30,7 @@ from kepler_node.camera.protocols import (
 from kepler_node.imaging.protocols import SolveFailureCategory, SolveResult
 from kepler_node.mount.protocols import MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
-from kepler_node.storage.models import SessionRecord
+from kepler_node.storage.models import EquipmentProfile, EquipmentProfileHardware, EquipmentProfileHardwareCamera, EquipmentProfileHardwareGps, EquipmentProfileHardwareLens, EquipmentProfileHardwareMount, EquipmentProfileSiteDefaults, SessionRecord
 
 # ------------------------------------------------------------------ #
 # Fake adapters                                                        #
@@ -276,6 +276,22 @@ def test_boot_transitions_to_discover(tmp_path: Path) -> None:
 def test_discover_transitions_to_connect(tmp_path: Path) -> None:
     ctrl = _make_controller(tmp_path=tmp_path)
     ctrl.session.state = ClawState.DISCOVER
+    # Provide a default profile so discover can auto-select and proceed to CONNECT
+    profile = EquipmentProfile(
+        profile_id="p1",
+        display_name="P1",
+        is_default=True,
+        hardware=EquipmentProfileHardware(
+            mount=EquipmentProfileHardwareMount(model="EQ6-R"),
+            camera=EquipmentProfileHardwareCamera(make="ZWO", model="ASI294MC"),
+            lens=EquipmentProfileHardwareLens(model="135mm", default_focal_length_mm=135),
+            gps=EquipmentProfileHardwareGps(),
+        ),
+        site_defaults=EquipmentProfileSiteDefaults(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    ctrl.store.write_profile(profile)
     result = ctrl.discover()
     assert result.next_state == ClawState.CONNECT
     assert ctrl.session.state == ClawState.CONNECT
@@ -290,6 +306,22 @@ def test_discover_surfaces_unhealthy_services_as_degraded(tmp_path: Path) -> Non
     )
     ctrl = _make_controller(node=node, tmp_path=tmp_path)
     ctrl.session.state = ClawState.DISCOVER
+    # Provide a default profile so discover can proceed to CONNECT despite degraded services
+    profile = EquipmentProfile(
+        profile_id="p1",
+        display_name="P1",
+        is_default=True,
+        hardware=EquipmentProfileHardware(
+            mount=EquipmentProfileHardwareMount(model="EQ6-R"),
+            camera=EquipmentProfileHardwareCamera(make="ZWO", model="ASI294MC"),
+            lens=EquipmentProfileHardwareLens(model="135mm", default_focal_length_mm=135),
+            gps=EquipmentProfileHardwareGps(),
+        ),
+        site_defaults=EquipmentProfileSiteDefaults(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    ctrl.store.write_profile(profile)
     result = ctrl.discover()
     assert result.next_state == ClawState.CONNECT  # still proceeds
     assert len(result.degraded) == 1

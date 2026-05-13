@@ -1,0 +1,12 @@
+{
+  "release_id": "v0.1.0",
+  "kepler_version": "0.1.0",
+  "release_channel": "main",
+  "supported_from_versions": ["0.1.0"],
+  "required_os": "linux",
+  "required_architecture": "aarch64",
+  "required_free_space_mb": 2048,
+  "managed_services": ["kepler-node", "kepler-ui", "indiserver"],
+  "target_schema_versions": {"storage": "1"},
+  "migration_steps": []
+}

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kepler_node.storage.models import EventRecord, FrameRecord, SessionRecord
+from kepler_node.storage.models import (
+    EquipmentProfile,
+    EventRecord,
+    FrameRecord,
+    InstallManifest,
+    SessionRecord,
+)
 
 
 class FilesystemSessionStore:
@@ -173,3 +179,101 @@ class FilesystemSessionStore:
             raise FileNotFoundError(f"No session directory found for {session_id}")
 
         return matches[0]
+
+    # ------------------------------------------------------------------ #
+    # Equipment profiles                                                   #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def profiles_root(self) -> Path:
+        """Return the root directory that holds equipment profiles."""
+        return self.data_root / "profiles"
+
+    def write_profile(self, profile: EquipmentProfile) -> Path:
+        """Persist an equipment profile as profiles/<profile_id>.json.
+
+        If ``profile.is_default`` is True, clears ``is_default`` on every
+        other stored profile first so at most one profile carries the flag.
+        """
+        self.profiles_root.mkdir(parents=True, exist_ok=True)
+        if profile.is_default:
+            self._clear_default_flag(exclude_id=profile.profile_id)
+        profile_path = self.profiles_root / f"{profile.profile_id}.json"
+        profile_path.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+        return profile_path
+
+    def read_profile(self, profile_id: str) -> EquipmentProfile | None:
+        """Return the equipment profile for *profile_id*, or None if not found."""
+        profile_path = self.profiles_root / f"{profile_id}.json"
+        if not profile_path.exists():
+            return None
+        return EquipmentProfile.model_validate_json(
+            profile_path.read_text(encoding="utf-8")
+        )
+
+    def list_profiles(self) -> list[EquipmentProfile]:
+        """Return all stored equipment profiles in creation-time order."""
+        if not self.profiles_root.exists():
+            return []
+        profiles: list[EquipmentProfile] = []
+        for p in sorted(self.profiles_root.glob("*.json")):
+            try:
+                profiles.append(
+                    EquipmentProfile.model_validate_json(p.read_text(encoding="utf-8"))
+                )
+            except Exception:
+                pass
+        return profiles
+
+    def delete_profile(self, profile_id: str) -> bool:
+        """Remove the profile file for *profile_id*.  Returns True if found."""
+        profile_path = self.profiles_root / f"{profile_id}.json"
+        if profile_path.exists():
+            profile_path.unlink()
+            return True
+        return False
+
+    def _clear_default_flag(self, *, exclude_id: str) -> None:
+        """Clear ``is_default`` on all profiles except *exclude_id*."""
+        if not self.profiles_root.exists():
+            return
+        for p in self.profiles_root.glob("*.json"):
+            if p.stem == exclude_id:
+                continue
+            try:
+                profile = EquipmentProfile.model_validate_json(
+                    p.read_text(encoding="utf-8")
+                )
+                if profile.is_default:
+                    profile.is_default = False
+                    p.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------ #
+    # Install manifest                                                     #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def install_manifest_path(self) -> Path:
+        """Return the canonical path for the install manifest."""
+        return self.data_root / "install_manifest.json"
+
+    def write_install_manifest(self, manifest: InstallManifest) -> Path:
+        """Persist the install manifest."""
+        self.data_root.mkdir(parents=True, exist_ok=True)
+        self.install_manifest_path.write_text(
+            manifest.model_dump_json(indent=2), encoding="utf-8"
+        )
+        return self.install_manifest_path
+
+    def read_install_manifest(self) -> InstallManifest | None:
+        """Return the stored install manifest, or None if not found."""
+        if not self.install_manifest_path.exists():
+            return None
+        try:
+            return InstallManifest.model_validate_json(
+                self.install_manifest_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            return None

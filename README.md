@@ -6,6 +6,8 @@ Kepler Node is a Python-first control stack for a field-ready astrophotography n
 
 The current v1 implementation focuses on a concrete starter rig: a Raspberry Pi 5, an iEXOS-100-02 PMC-Eight mount, and a Fuji X-T5. The repo is organized so the control logic stays reusable even while the first release is optimized for that hardware.
 
+The intended operating model is hybrid and local-first: the Pi must be able to host a usable field workflow with on-node KStars/Ekos when needed, while also supporting a headless mode where a laptop or other client runs KStars/Ekos remotely against the node.
+
 Today the project includes a real Claw state machine, adapter-backed hardware and node-management boundaries, local filesystem session persistence, a local FastAPI control surface, and a thin Streamlit operator UI for the first mobile-first workflow screens.
 
 ## What It Does
@@ -35,6 +37,8 @@ The codebase is split around the main runtime boundaries instead of collapsing o
 
 For diagrams of the runtime layout and session loop, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+For setup and operator runbooks, see [docs/SETUP.md](docs/SETUP.md) and [docs/RUNBOOKS.md](docs/RUNBOOKS.md).
+
 ## Workflow Coverage
 
 - Boot, discover, connect, and readiness evaluation with named blockers such as time uncertainty, critically low storage, and power-integrity warnings
@@ -59,6 +63,8 @@ uv run ruff check .
 uv run kepler-node --help
 uv run pytest
 ```
+
+This is the current development quick start. The Phase 5 goal is a profile-based bootstrap flow for a complete Pi deployment and operator-ready runbooks.
 
 ## Local API And UI
 

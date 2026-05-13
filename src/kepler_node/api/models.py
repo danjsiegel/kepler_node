@@ -38,6 +38,10 @@ class NodeStatusResponse(BaseModel):
     power_integrity: dict[str, Any]
     detected_devices: dict[str, Any]
     build_summary: str = "kepler-node v1"
+    active_equipment_profile: dict[str, Any] | None = None
+    planner_mode: str | None = None
+    planner_connection_details: dict[str, Any] | None = None
+    install_manifest: dict[str, Any] | None = None
 
 
 class ReadinessResponse(BaseModel):
@@ -169,3 +173,62 @@ class TimeConfirmResponse(BaseModel):
     source: str
     summary: str
     applied: bool
+
+
+# ------------------------------------------------------------------ #
+# Equipment profile API models                                         #
+# ------------------------------------------------------------------ #
+
+class EquipmentProfileSummary(BaseModel):
+    """Single entry in GET /api/v1/equipment/profiles list."""
+
+    profile_id: str
+    display_name: str
+    is_default: bool
+    hardware_summary: dict[str, Any] = Field(default_factory=dict)
+    updated_at: datetime
+
+
+class EquipmentProfileListResponse(BaseModel):
+    """GET /api/v1/equipment/profiles response."""
+
+    profiles: list[EquipmentProfileSummary]
+    active_profile_id: str | None = None
+
+
+class EquipmentProfileResponse(BaseModel):
+    """GET /api/v1/equipment/profiles/{profile_id} response — full document."""
+
+    profile: dict[str, Any]
+    is_active: bool = False
+
+
+# ------------------------------------------------------------------ #
+# Target intake API models                                             #
+# ------------------------------------------------------------------ #
+
+class TargetRequest(BaseModel):
+    """POST /api/v1/target request body."""
+
+    target_label: str
+    ra_hours: float
+    dec_deg: float
+    target_source: str = "manual"
+    run_parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class TargetCurrentResponse(BaseModel):
+    """GET /api/v1/target/current response."""
+
+    target_label: str | None
+    ra_hours: float | None
+    dec_deg: float | None
+    target_source: str | None
+    run_parameters: dict[str, Any]
+    active_equipment_profile_id: str | None
+
+
+class SessionStartRequest(BaseModel):
+    """POST /api/v1/session/start — no required body in v1; run parameters may be in staged target."""
+
+    pass

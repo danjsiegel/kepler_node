@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ from kepler_node.imaging.protocols import SolveFailureCategory, SolverBackend
 from kepler_node.mount.protocols import MountBackend, MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
 from kepler_node.storage.models import (
+    EquipmentProfile,
     EventRecord,
     EventSeverity,
     EventType,
@@ -113,6 +116,12 @@ class ClawController:
         self._node_event_sequence: int = 0
         self._node_events: list[EventRecord] = []
         self._session_started_at: datetime = datetime.now(UTC)
+        # Active equipment profile set by discover() or /equipment/profiles/{id}/select
+        self.active_equipment_profile: EquipmentProfile | None = None
+        # Staged target metadata (label and source tracked separately from session RA/Dec)
+        self._staged_target_label: str | None = None
+        self._staged_target_source: str | None = None
+        self._staged_run_parameters: dict[str, Any] = {}
 
     @property
     def node_events(self) -> list[EventRecord]:
@@ -167,12 +176,84 @@ class ClawController:
                 )
             )
 
-        self.session.state = ClawState.CONNECT
-        result = self._make_transition(
-            prev,
-            ClawState.CONNECT,
-            "discover complete" if not degraded else "discover complete with degraded services",
-        )
+        # Auto-select the default equipment profile (spec lines 581-583)
+        try:
+            stored_profiles = self.store.list_profiles()
+            if not stored_profiles:
+                degraded.append(
+                    ReadinessCondition(
+                        name="no_default_equipment_profile",
+                        severity="degraded",
+                        summary=(
+                            "No equipment profiles are configured; "
+                            "target intake and session start will be unavailable"
+                        ),
+                        operator_action_required=(
+                            "POST /api/v1/equipment/profiles to create a profile, "
+                            "then POST /api/v1/equipment/profiles/{id}/select"
+                        ),
+                    )
+                )
+            else:
+                defaults = [p for p in stored_profiles if p.is_default]
+                if len(defaults) == 1:
+                    self.active_equipment_profile = defaults[0]
+                elif len(defaults) > 1:
+                    degraded.append(
+                        ReadinessCondition(
+                            name="multiple_default_profiles",
+                            severity="degraded",
+                            summary=(
+                                f"{len(defaults)} profiles are marked as default; "
+                                "select one explicitly"
+                            ),
+                            operator_action_required=(
+                                "POST /api/v1/equipment/profiles/{id}/select to choose the active profile"
+                            ),
+                        )
+                    )
+                else:
+                    degraded.append(
+                        ReadinessCondition(
+                            name="no_default_equipment_profile",
+                            severity="degraded",
+                            summary=(
+                                "No profile is marked as default; "
+                                "target intake and session start will be unavailable"
+                            ),
+                            operator_action_required=(
+                                "Mark a profile as default or POST /api/v1/equipment/profiles/{id}/select"
+                            ),
+                        )
+                    )
+        except Exception as exc:
+            degraded.append(
+                ReadinessCondition(
+                    name="profile_load_failed",
+                    severity="degraded",
+                    summary=f"Could not load equipment profiles: {exc}",
+                )
+            )
+
+        _profile_pause_conditions = {
+            "multiple_default_profiles",
+            "no_default_equipment_profile",
+        }
+        degraded_names = {c.name for c in degraded}
+        if degraded_names & _profile_pause_conditions:
+            self.session.state = ClawState.PAUSED
+            result = self._make_transition(
+                prev,
+                ClawState.PAUSED,
+                "discover paused: operator profile resolution required",
+            )
+        else:
+            self.session.state = ClawState.CONNECT
+            result = self._make_transition(
+                prev,
+                ClawState.CONNECT,
+                "discover complete" if not degraded else "discover complete with degraded services",
+            )
         result.degraded = degraded
         return result
 
@@ -301,7 +382,139 @@ class ClawController:
                 )
             )
 
+        # Zoom-lens gate: refuse calibration/centering until focal length is trusted
+        profile = self.active_equipment_profile
+        if profile is not None and profile.hardware.lens.is_zoom:
+            fl = (
+                profile.solving_hints.focal_length_assumption_mm
+                or profile.hardware.lens.default_focal_length_mm
+            )
+            if fl is None:
+                blockers.append(
+                    ReadinessCondition(
+                        name="focal_length_assumption_required",
+                        severity="blocking",
+                        summary=(
+                            "Zoom lens is active but no trusted focal-length assumption is set; "
+                            "update the active equipment profile with a focal-length assumption"
+                        ),
+                        operator_action_required=(
+                            "Set solving_hints.focal_length_assumption_mm or "
+                            "hardware.lens.default_focal_length_mm in the active equipment profile"
+                        ),
+                    )
+                )
+
         return blockers
+
+    # ------------------------------------------------------------------ #
+    # Target intake and session start                                      #
+    # ------------------------------------------------------------------ #
+
+    def stage_target_intake(
+        self,
+        *,
+        target_label: str,
+        ra_hours: float,
+        dec_deg: float,
+        target_source: str = "manual",
+        run_parameters: dict[str, Any] | None = None,
+    ) -> None:
+        """Stage a target for session start.
+
+        Stores coordinates and metadata on the controller without advancing
+        the state machine.  Replaces any previously staged target.  Only
+        valid before active centering or capture begins.
+        """
+        self._staged_target_label = target_label
+        self._staged_target_source = target_source
+        self._staged_run_parameters = run_parameters or {}
+        self.session.staged_target_ra_hours = ra_hours
+        self.session.staged_target_dec_deg = dec_deg
+        self.session.staged_target_id = None
+
+    def clear_staged_target(self) -> None:
+        """Remove the currently staged target.  Safe when no session is active."""
+        self._staged_target_label = None
+        self._staged_target_source = None
+        self._staged_run_parameters = {}
+        self.session.staged_target_ra_hours = None
+        self.session.staged_target_dec_deg = None
+        self.session.staged_target_id = None
+
+    def start_session(self) -> TransitionResult:
+        """Create a managed session and enter target centering.
+
+        Valid only from ``ready`` when a staged target and inline run
+        parameters are present, time is trusted, and no readiness blockers
+        exist.  On success, creates a ``session_id``, persists the initial
+        ``SessionRecord``, copies the staged run parameters onto the session,
+        and enters ``run_target_centering()``.
+
+        Raises ``ValueError`` for wrong state (→ 409).
+        Raises ``RuntimeError`` for validation or readiness failures (→ 422).
+        """
+        if self.session.state != ClawState.READY:
+            raise ValueError(
+                f"session/start is only valid from ready state (current: {self.session.state})"
+            )
+        if (
+            self.session.staged_target_ra_hours is None
+            or self.session.staged_target_dec_deg is None
+        ):
+            raise RuntimeError("session/start requires a staged target; POST /api/v1/target first")
+        if not self._staged_run_parameters:
+            raise RuntimeError(
+                "session/start requires inline run parameters "
+                "(exposure_seconds, camera_settings, stop_condition)"
+            )
+        required_run_param_keys = {"exposure_seconds", "camera_settings", "stop_condition"}
+        missing = required_run_param_keys - set(self._staged_run_parameters.keys())
+        if missing:
+            raise RuntimeError(
+                f"session/start run parameters missing required fields: {sorted(missing)}"
+            )
+
+        if self.active_equipment_profile is None:
+            raise RuntimeError(
+                "session/start requires an active equipment profile; "
+                "POST /api/v1/equipment/profiles/{id}/select first"
+            )
+
+        blockers = self.check_readiness()
+        if blockers:
+            raise RuntimeError(
+                f"session/start blocked: {blockers[0].name} — {blockers[0].summary}"
+            )
+
+        time_st = self.node.time_status()
+        if not time_st.trusted:
+            raise RuntimeError("session/start requires trusted time; confirm time first")
+
+        # Create session with canonical id format (spec line 1260)
+        now = datetime.now(UTC)
+        session_id = f"session-{now.strftime('%Y%m%dT%H%M%SZ')}-{os.urandom(3).hex()}"
+        self.session.session_id = session_id
+        self.session.run_parameters = dict(self._staged_run_parameters)
+        self._session_started_at = now
+
+        # Persist initial session record
+        record = SessionRecord(
+            session_id=session_id,
+            started_at=now,
+            updated_at=now,
+            state=ClawState.TARGET_ACQUIRED,
+            target_source=self._staged_target_source,
+            target_label=self._staged_target_label,
+            ra_hours=self.session.staged_target_ra_hours,
+            dec_deg=self.session.staged_target_dec_deg,
+            equipment_profile_id=self.active_equipment_profile.profile_id,
+            operating_mode="managed",
+            selected_inline_run_parameters=dict(self._staged_run_parameters),
+        )
+        self.store.write_session_record(record)
+
+        return self.run_target_centering()
 
     # ------------------------------------------------------------------ #
     # Shared verification loop: calibrate / test_capture / solve /        #

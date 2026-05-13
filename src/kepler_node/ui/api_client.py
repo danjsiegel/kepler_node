@@ -131,6 +131,54 @@ class KeplerApiClient:
         return self._get("/api/v1/session/current/events", params=params)
 
     # ------------------------------------------------------------------ #
+    # Equipment profiles                                                   #
+    # ------------------------------------------------------------------ #
+
+    def get_equipment_profiles(self) -> dict[str, Any]:
+        """GET /api/v1/equipment/profiles"""
+        return self._get("/api/v1/equipment/profiles")
+
+    def get_equipment_profile(self, profile_id: str) -> dict[str, Any]:
+        """GET /api/v1/equipment/profiles/{profile_id}"""
+        return self._get(f"/api/v1/equipment/profiles/{profile_id}")
+
+    def post_equipment_profile(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/v1/equipment/profiles"""
+        return self._post("/api/v1/equipment/profiles", body=body)
+
+    def put_equipment_profile(self, profile_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """PUT /api/v1/equipment/profiles/{profile_id}"""
+        resp = self._client.put(f"/api/v1/equipment/profiles/{profile_id}", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    def post_equipment_profile_select(self, profile_id: str) -> dict[str, Any]:
+        """POST /api/v1/equipment/profiles/{profile_id}/select"""
+        return self._post(f"/api/v1/equipment/profiles/{profile_id}/select")
+
+    # ------------------------------------------------------------------ #
+    # Target intake                                                        #
+    # ------------------------------------------------------------------ #
+
+    def get_target_current(self) -> dict[str, Any] | None:
+        """GET /api/v1/target/current — None when no target staged."""
+        return self._get_nullable("/api/v1/target/current")
+
+    def post_target(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/v1/target"""
+        return self._post("/api/v1/target", body=body)
+
+    def delete_target_current(self) -> dict[str, Any]:
+        """DELETE /api/v1/target/current"""
+        resp = self._client.delete("/api/v1/target/current")
+        resp.raise_for_status()
+        return resp.json()
+
+    def post_session_start(self) -> dict[str, Any]:
+        """POST /api/v1/session/start"""
+        return self._post("/api/v1/session/start")
+
+    # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
 

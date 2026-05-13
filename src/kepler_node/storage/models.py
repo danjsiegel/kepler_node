@@ -11,6 +11,120 @@ from pydantic import BaseModel, Field
 from kepler_node.agent.session import ClawState, TerminalOutcome, WorkflowIntent
 
 
+# ====================================================================== #
+# Equipment Profile                                                        #
+# ====================================================================== #
+
+class EquipmentProfileHardwareMount(BaseModel):
+    model: str | None = None
+    driver_name: str | None = None
+    serial_number: str | None = None
+
+
+class EquipmentProfileHardwareCamera(BaseModel):
+    make: str | None = None
+    model: str | None = None
+    usb_power_supply_mode: str = "off"
+    verification_shutter_mode: str = "electronic_preferred"
+
+
+class EquipmentProfileHardwareLens(BaseModel):
+    model: str | None = None
+    is_zoom: bool = False
+    default_focal_length_mm: float | None = None
+    focal_length_source: str | None = None
+
+
+class EquipmentProfileHardwareGps(BaseModel):
+    enabled: bool = False
+    provider: str = "gpsd"
+    expected_receiver: str | None = None
+
+
+class EquipmentProfileHardware(BaseModel):
+    mount: EquipmentProfileHardwareMount = Field(
+        default_factory=EquipmentProfileHardwareMount
+    )
+    camera: EquipmentProfileHardwareCamera = Field(
+        default_factory=EquipmentProfileHardwareCamera
+    )
+    lens: EquipmentProfileHardwareLens = Field(
+        default_factory=EquipmentProfileHardwareLens
+    )
+    gps: EquipmentProfileHardwareGps = Field(
+        default_factory=EquipmentProfileHardwareGps
+    )
+
+
+class EquipmentProfileSiteDefaults(BaseModel):
+    site_name: str | None = None
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
+    elevation_m: float | None = None
+    prefer_gps: bool = True
+
+
+class EquipmentProfileSolvingHints(BaseModel):
+    focal_length_assumption_mm: float | None = None
+    pixel_scale_hint_arcsec_per_px: float | None = None
+
+
+class EquipmentProfileBackendPreferences(BaseModel):
+    camera_backend: str = "gphoto2"
+    mount_backend: str = "indi"
+    solver_backend: str = "astrometry_net"
+    gps_backend: str = "gpsd"
+
+
+class EquipmentProfile(BaseModel):
+    """Canonical equipment profile persisted under data_root/profiles/."""
+
+    schema_version: int = 1
+    profile_id: str
+    display_name: str
+    is_default: bool = False
+    hardware: EquipmentProfileHardware = Field(
+        default_factory=EquipmentProfileHardware
+    )
+    site_defaults: EquipmentProfileSiteDefaults = Field(
+        default_factory=EquipmentProfileSiteDefaults
+    )
+    solving_hints: EquipmentProfileSolvingHints = Field(
+        default_factory=EquipmentProfileSolvingHints
+    )
+    backend_preferences: EquipmentProfileBackendPreferences = Field(
+        default_factory=EquipmentProfileBackendPreferences
+    )
+    notes: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+# ====================================================================== #
+# Install Manifest                                                         #
+# ====================================================================== #
+
+class InstallManifest(BaseModel):
+    """Persisted install manifest written by bootstrap and updated by upgrade."""
+
+    schema_version: int = 1
+    kepler_version: str
+    release_id: str
+    release_channel: str = "stable"
+    installed_at: datetime
+    last_upgrade_at: datetime | None = None
+    bootstrap_version: str = "1"
+    bootstrap_profile: str | None = None
+    os_id: str | None = None
+    os_version: str | None = None
+    architecture: str | None = None
+    managed_services: list[str] = Field(default_factory=list)
+    managed_packages: list[str] = Field(default_factory=list)
+    schema_versions: dict[str, int] = Field(default_factory=dict)
+    config_version: str = "1"
+    last_upgrade_result: str | None = None
+
+
 class ArtifactKind(StrEnum):
     """Canonical artifact kinds persisted in v1 metadata."""
 
