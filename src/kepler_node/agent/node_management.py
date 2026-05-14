@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import os
 import shutil
 import subprocess
@@ -89,12 +90,60 @@ class LocalNodeManagementBackend:
             results.append(ServiceHealth(name=name, healthy=healthy, summary=summary))
         return results
 
-    def time_status(self) -> TimeStatus:
-        """Read current time trust from timedatectl.
+    def _query_gps_fix(self) -> tuple[datetime | None, bool]:
+        """Query gpsd for a valid GPS fix via gpspipe.
 
-        Priority: NTP (network) > operator_confirmed fallback > untrusted.
-        NTP synchronization supersedes a previously confirmed operator time.
+        Returns ``(gps_time, has_valid_fix)``.  Fails silently to ``(None, False)``
+        when gpsd is absent, the receiver has no fix, or the query times out.
+        A mode-2 (2-D) or better fix is required.
         """
+        try:
+            proc = subprocess.run(
+                ["gpspipe", "-w", "-n", "10"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in proc.stdout.splitlines():
+                try:
+                    msg = _json.loads(line)
+                    if msg.get("class") == "TPV" and msg.get("mode", 0) >= 2:
+                        time_str = msg.get("time")
+                        if time_str:
+                            gps_time = datetime.fromisoformat(
+                                time_str.replace("Z", "+00:00")
+                            )
+                            if gps_time.tzinfo is None:
+                                gps_time = gps_time.replace(tzinfo=UTC)
+                            return gps_time, True
+                except (ValueError, KeyError):
+                    continue
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+        return None, False
+
+    def time_status(self) -> TimeStatus:
+        """Read current time trust.
+
+        Priority: GPS (valid fix) > NTP/network > RTC > operator_confirmed > untrusted.
+
+        GPS supersedes NTP when the receiver reports a valid recent fix.  When both
+        GPS and NTP are available and disagree by more than 5 seconds, GPS is
+        preferred and ``gps_ntp_mismatch_seconds`` is populated so callers can
+        surface a degraded ``time_source_mismatch`` condition.
+
+        NTP synchronisation supersedes a previously operator-confirmed fallback.
+        """
+        # --- GPS (highest precedence) ---
+        gps_time, gps_has_fix = self._query_gps_fix()
+
+        # Capture system time after GPS subprocess so the GPS/NTP delta
+        # reflects the offset at the moment the TPV was processed.
+        now_utc = datetime.now(UTC)
+
+        # --- NTP / RTC via timedatectl ---
+        ntp_synced = False
+        rtc_synced = False
         try:
             proc = subprocess.run(
                 ["timedatectl", "show", "--no-pager"],
@@ -109,27 +158,53 @@ class LocalNodeManagementBackend:
                 for k, v in [line.split("=", 1)]
             }
             ntp_synced = props.get("NTPSynchronized", "no").strip().lower() == "yes"
-            if ntp_synced:
-                return TimeStatus(
-                    trusted=True,
-                    source=TimeSource.NETWORK,
-                    summary="NTP synchronized",
-                    observed_at=datetime.now(UTC),
-                )
+            rtc_synced = props.get("RTCSynchronized", "no").strip().lower() == "yes"
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
+
+        if gps_has_fix:
+            mismatch_seconds: float | None = None
+            if ntp_synced and gps_time is not None:
+                delta = abs((gps_time - now_utc).total_seconds())
+                if delta > 5.0:
+                    mismatch_seconds = delta
+            return TimeStatus(
+                trusted=True,
+                source=TimeSource.GPS,
+                summary="GPS fix active",
+                observed_at=now_utc,
+                gps_ntp_mismatch_seconds=mismatch_seconds,
+            )
+
+        if ntp_synced:
+            return TimeStatus(
+                trusted=True,
+                source=TimeSource.NETWORK,
+                summary="NTP synchronized",
+                observed_at=now_utc,
+            )
+
+        if rtc_synced:
+            return TimeStatus(
+                trusted=True,
+                source=TimeSource.RTC,
+                summary="RTC synchronized",
+                observed_at=now_utc,
+            )
+
         if self._confirmed_source == TimeSource.OPERATOR_CONFIRMED:
             return TimeStatus(
                 trusted=True,
                 source=TimeSource.OPERATOR_CONFIRMED,
                 summary="operator-confirmed time active",
-                observed_at=datetime.now(UTC),
+                observed_at=now_utc,
             )
+
         return TimeStatus(
             trusted=False,
             source=TimeSource.UNTRUSTED,
             summary="time not synchronized",
-            observed_at=datetime.now(UTC),
+            observed_at=now_utc,
         )
 
     def storage_status(self) -> StorageStatus:

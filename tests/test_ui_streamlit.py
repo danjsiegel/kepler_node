@@ -168,8 +168,11 @@ def test_headless_mode_flow_renders_actionable_planner_guidance() -> None:
             planner_mode="headless-node",
             planner_connection_details={
                 "mode": "remote_kstars_ekos",
-                "summary": "Connect KStars/Ekos remotely: set INDI server host to this node's IP address and port 7624",
+                "host": "192.168.1.42",
+                "summary": "Connect KStars/Ekos remotely: set INDI server host to 192.168.1.42 and port 7624",
                 "indi_port": 7624,
+                "indi_reachable": True,
+                "kepler_reachable": True,
             },
         )
     )
@@ -178,11 +181,17 @@ def test_headless_mode_flow_renders_actionable_planner_guidance() -> None:
     markdown_values = [m.value for m in at.markdown]
     info_values = [i.value for i in at.info]
     metric_values = [str(m.value) for m in at.metric]
+    metric_labels = [m.label for m in at.metric]
 
     assert any("Headless Remote Planner" in value for value in markdown_values), markdown_values
     assert any("Use Remote KStars/Ekos" in value for value in markdown_values), markdown_values
-    assert any("INDI server host" in value for value in info_values), info_values
+    assert any("192.168.1.42" in value for value in info_values), info_values
     assert any("7624" in value for value in metric_values), metric_values
+    assert any("Node Address" in lbl for lbl in metric_labels), metric_labels
+    assert any("192.168.1.42" in v for v in metric_values), metric_values
+    assert any("INDI Service" in lbl for lbl in metric_labels), metric_labels
+    assert any("Kepler API" in lbl for lbl in metric_labels), metric_labels
+    assert any("reachable" in v for v in metric_values), metric_values
 
 
 def test_field_mode_flow_renders_actionable_local_planner_guidance() -> None:
@@ -191,8 +200,12 @@ def test_field_mode_flow_renders_actionable_local_planner_guidance() -> None:
             planner_mode="field-fallback",
             planner_connection_details={
                 "mode": "on_node_kstars_ekos",
-                "summary": "Launch KStars/Ekos on this node via xRDP remote desktop: connect to this node's IP address on port 3389 (RDP)",
+                "host": "192.168.1.42",
+                "summary": "Launch KStars/Ekos on this node via xRDP remote desktop: connect to 192.168.1.42 on port 3389 (RDP)",
                 "rdp_port": 3389,
+                "indi_reachable": True,
+                "kepler_reachable": True,
+                "xrdp_reachable": True,
             },
         )
     )
@@ -201,8 +214,15 @@ def test_field_mode_flow_renders_actionable_local_planner_guidance() -> None:
     markdown_values = [m.value for m in at.markdown]
     info_values = [i.value for i in at.info]
     metric_values = [str(m.value) for m in at.metric]
+    metric_labels = [m.label for m in at.metric]
 
     assert any("Field Local-First" in value for value in markdown_values), markdown_values
     assert any("Open Local Planner Session" in value for value in markdown_values), markdown_values
     assert any("xRDP remote desktop" in value for value in info_values), info_values
     assert any("3389" in value for value in metric_values), metric_values
+    assert any("Node Address" in lbl for lbl in metric_labels), metric_labels
+    assert any("192.168.1.42" in v for v in metric_values), metric_values
+    assert any("INDI Service" in lbl for lbl in metric_labels), metric_labels
+    assert any("Kepler API" in lbl for lbl in metric_labels), metric_labels
+    assert any("xRDP Service" in lbl for lbl in metric_labels), metric_labels
+    assert any("reachable" in v for v in metric_values), metric_values

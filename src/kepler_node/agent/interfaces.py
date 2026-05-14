@@ -61,6 +61,9 @@ class TimeStatus(BaseModel):
     source: TimeSource
     summary: str
     observed_at: datetime | None = None
+    # Non-None when both GPS (valid fix) and NTP are available and disagree by >5 s.
+    # Used by _get_degraded() to surface the time_source_mismatch degraded condition.
+    gps_ntp_mismatch_seconds: float | None = None
 
 
 class StorageStatus(BaseModel):

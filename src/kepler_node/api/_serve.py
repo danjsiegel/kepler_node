@@ -45,7 +45,10 @@ def make_dev_app() -> FastAPI:
 
     controller = ClawController(
         session=RuntimeSession(),
-        node_backend=LocalNodeManagementBackend(data_root=data_root),
+        node_backend=LocalNodeManagementBackend(
+            data_root=data_root,
+            service_names=settings.managed_service_names,
+        ),
         mount_backend=INDIMountBackend(),
         camera_backend=Gphoto2CameraBackend(),
         solver_backend=AstrometryNetSolverBackend(),

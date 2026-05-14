@@ -299,10 +299,21 @@ with overview_tab:
         st.metric("Mode", mode_label)
         if planner_conn:
             st.info(planner_conn.get("summary", ""))
+            if planner_conn.get("host"):
+                st.metric("Node Address", planner_conn["host"])
             if planner_conn.get("indi_port"):
                 st.code(f"INDI server port: {planner_conn['indi_port']}")
             if planner_conn.get("rdp_port"):
                 st.code(f"xRDP port: {planner_conn['rdp_port']}")
+            indi_r = planner_conn.get("indi_reachable")
+            if indi_r is not None:
+                st.metric("INDI Service", "✅ reachable" if indi_r else "⚠️ unreachable")
+            kepler_r = planner_conn.get("kepler_reachable")
+            if kepler_r is not None:
+                st.metric("Kepler API", "✅ reachable" if kepler_r else "⚠️ unreachable")
+            xrdp_r = planner_conn.get("xrdp_reachable")
+            if xrdp_r is not None:
+                st.metric("xRDP Service", "✅ reachable" if xrdp_r else "⚠️ unreachable")
 
         planner_title, planner_action, planner_steps, planner_metrics = _planner_mode_copy(
             planner_mode,
@@ -633,6 +644,11 @@ with session_tab:
                     st.error(str(exc))
 
         with col_rl:
+            if state != "paused":
+                st.caption(
+                    "To hand control to external KStars/Ekos, pause the session first, "
+                    "then Release Control."
+                )
             if st.button("🔓 Release Control", disabled=(state != "paused")):
                 try:
                     resp = client.post_session_release_control()

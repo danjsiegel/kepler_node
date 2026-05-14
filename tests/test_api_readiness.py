@@ -34,12 +34,16 @@ class FakeNodeBackend:
         self,
         *,
         time_trusted: bool = True,
+        time_source: TimeSource = TimeSource.NETWORK,
+        gps_ntp_mismatch_seconds: float | None = None,
         storage_summary: str = "ok",
         storage_writable: bool = True,
         power_healthy: bool = True,
         service_healths: list[ServiceHealth] | None = None,
     ) -> None:
         self._time_trusted = time_trusted
+        self._time_source = time_source
+        self._gps_ntp_mismatch_seconds = gps_ntp_mismatch_seconds
         self._storage_summary = storage_summary
         self._storage_writable = storage_writable
         self._power_healthy = power_healthy
@@ -54,8 +58,9 @@ class FakeNodeBackend:
     def time_status(self) -> TimeStatus:
         return TimeStatus(
             trusted=self._time_trusted,
-            source=TimeSource.NETWORK,
+            source=self._time_source,
             summary="ok" if self._time_trusted else "time not synchronized",
+            gps_ntp_mismatch_seconds=self._gps_ntp_mismatch_seconds,
         )
 
     def storage_status(self) -> StorageStatus:
@@ -523,3 +528,110 @@ def test_readiness_not_ready_when_session_failed_uncleared(tmp_path: Path) -> No
     assert data["ready"] is False
     names = [b["name"] for b in data["blockers"]]
     assert "terminal_session_uncleared" in names
+
+
+# ------------------------------------------------------------------ #
+# Degraded conditions: trusted-time sources                           #
+# ------------------------------------------------------------------ #
+
+
+def test_readiness_degraded_time_source_mismatch_when_gps_ntp_disagree(
+    tmp_path: Path,
+) -> None:
+    """GET /api/v1/readiness returns time_source_mismatch degraded condition when
+    both GPS and NTP are available but disagree by more than 5 seconds."""
+    node = FakeNodeBackend(
+        time_trusted=True,
+        time_source=TimeSource.GPS,
+        gps_ntp_mismatch_seconds=12.3,
+    )
+    ctrl = _make_controller(node=node, tmp_path=tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+
+    # Node is still ready (mismatch is degraded, not blocking).
+    assert data["ready"] is True
+    degraded_names = [d["name"] for d in data["degraded"]]
+    assert "time_source_mismatch" in degraded_names
+
+    mismatch = next(d for d in data["degraded"] if d["name"] == "time_source_mismatch")
+    assert "12.3" in mismatch["summary"] or "GPS" in mismatch["summary"]
+
+
+def test_readiness_no_time_mismatch_when_gps_ntp_agree(tmp_path: Path) -> None:
+    """No time_source_mismatch degraded condition when GPS and NTP agree."""
+    node = FakeNodeBackend(
+        time_trusted=True,
+        time_source=TimeSource.GPS,
+        gps_ntp_mismatch_seconds=None,
+    )
+    ctrl = _make_controller(node=node, tmp_path=tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+
+    degraded_names = [d["name"] for d in data["degraded"]]
+    assert "time_source_mismatch" not in degraded_names
+
+
+def test_readiness_degraded_time_source_weaker_for_rtc(tmp_path: Path) -> None:
+    """GET /api/v1/readiness surfaces time_source_weaker when source is RTC."""
+    node = FakeNodeBackend(
+        time_trusted=True,
+        time_source=TimeSource.RTC,
+    )
+    ctrl = _make_controller(node=node, tmp_path=tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+
+    # RTC is trusted but weaker than NTP/GPS — node remains ready.
+    assert data["ready"] is True
+    degraded_names = [d["name"] for d in data["degraded"]]
+    assert "time_source_weaker" in degraded_names
+    weaker = next(d for d in data["degraded"] if d["name"] == "time_source_weaker")
+    assert "RTC" in weaker["summary"]
+    assert "NTP or GPS preferred" in weaker["summary"]
+
+
+def test_readiness_degraded_time_source_weaker_for_operator_confirmed(
+    tmp_path: Path,
+) -> None:
+    """GET /api/v1/readiness surfaces time_source_weaker for operator_confirmed source."""
+    node = FakeNodeBackend(
+        time_trusted=True,
+        time_source=TimeSource.OPERATOR_CONFIRMED,
+    )
+    ctrl = _make_controller(node=node, tmp_path=tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+
+    assert data["ready"] is True
+    degraded_names = [d["name"] for d in data["degraded"]]
+    assert "time_source_weaker" in degraded_names
+    weaker = next(d for d in data["degraded"] if d["name"] == "time_source_weaker")
+    assert "operator-confirmed" in weaker["summary"]
+    assert "NTP or GPS preferred" in weaker["summary"]
+
+
+def test_readiness_no_degraded_time_condition_for_ntp(tmp_path: Path) -> None:
+    """No time-related degraded condition when source is NTP (preferred)."""
+    node = FakeNodeBackend(time_trusted=True, time_source=TimeSource.NETWORK)
+    ctrl = _make_controller(node=node, tmp_path=tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+
+    degraded_names = [d["name"] for d in data["degraded"]]
+    assert "time_source_mismatch" not in degraded_names
+    assert "time_source_weaker" not in degraded_names
+
+
+def test_node_status_time_certainty_reflects_gps_source(tmp_path: Path) -> None:
+    """GET /api/v1/node/status time_certainty reflects GPS as source when GPS is active."""
+    node = FakeNodeBackend(time_trusted=True, time_source=TimeSource.GPS)
+    ctrl = _make_controller(node=node, tmp_path=tmp_path)
+    ctrl.session.state = ClawState.READY
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/node/status").json()
+
+    assert data["time_certainty"]["trusted"] is True
+    assert data["time_certainty"]["source"] == "gps"
+

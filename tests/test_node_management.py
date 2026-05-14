@@ -377,3 +377,154 @@ def test_confirm_time_action_satisfies_node_management_backend_protocol(
     backend = _make_backend(tmp_path)
     # Structural check: LocalNodeManagementBackend satisfies NodeManagementBackend.
     _: NodeManagementBackend = backend  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# GPS time precedence
+# ---------------------------------------------------------------------------
+
+_GPS_TPV_FIX = '{"class":"TPV","mode":3,"time":"2026-05-13T22:00:00.000Z","lat":40.0,"lon":-74.0}'
+_GPS_TPV_FIX_TZ_NAIVE = '{"class":"TPV","mode":3,"time":"2026-05-13T22:00:00.000","lat":40.0,"lon":-74.0}'
+_GPS_NO_FIX = '{"class":"TPV","mode":1}'
+_GPS_VERSION_MSG = '{"class":"VERSION","release":"3.23"}'
+
+
+def _completed_proc_lines(*lines: str, returncode: int = 0) -> MagicMock:
+    proc = MagicMock(spec=subprocess.CompletedProcess)
+    proc.stdout = "\n".join(lines) + "\n"
+    proc.stderr = ""
+    proc.returncode = returncode
+    return proc
+
+
+def test_time_status_gps_takes_precedence_over_ntp(tmp_path: Path) -> None:
+    """GPS source wins over NTP when receiver has a valid fix (mode >= 2)."""
+    backend = _make_backend(tmp_path)
+    # First call: gpspipe returning a TPV fix; second call: timedatectl NTP synced.
+    gpspipe_resp = _completed_proc_lines(_GPS_VERSION_MSG, _GPS_TPV_FIX)
+    timedatectl_resp = _completed_proc("NTPSynchronized=yes\nRTCSynchronized=yes\n")
+
+    with patch("subprocess.run", side_effect=[gpspipe_resp, timedatectl_resp]):
+        status = backend.time_status()
+
+    assert status.trusted is True
+    assert status.source == TimeSource.GPS
+    assert status.summary == "GPS fix active"
+
+
+def test_time_status_gps_no_fix_falls_through_to_ntp(tmp_path: Path) -> None:
+    """When GPS receiver has mode < 2 the backend falls through to NTP."""
+    backend = _make_backend(tmp_path)
+    gpspipe_resp = _completed_proc_lines(_GPS_NO_FIX)
+    timedatectl_resp = _completed_proc("NTPSynchronized=yes\n")
+
+    with patch("subprocess.run", side_effect=[gpspipe_resp, timedatectl_resp]):
+        status = backend.time_status()
+
+    assert status.trusted is True
+    assert status.source == TimeSource.NETWORK
+
+
+def test_time_status_rtc_fallback_when_ntp_unavailable(tmp_path: Path) -> None:
+    """RTC is used when GPS has no fix and NTP is not synchronized."""
+    backend = _make_backend(tmp_path)
+    gpspipe_resp = _completed_proc_lines(_GPS_NO_FIX)
+    timedatectl_resp = _completed_proc("NTPSynchronized=no\nRTCSynchronized=yes\n")
+
+    with patch("subprocess.run", side_effect=[gpspipe_resp, timedatectl_resp]):
+        status = backend.time_status()
+
+    assert status.trusted is True
+    assert status.source == TimeSource.RTC
+    assert status.summary == "RTC synchronized"
+
+
+def test_time_status_gps_fix_lost_falls_through_to_ntp(tmp_path: Path) -> None:
+    """When gpspipe is unavailable (FileNotFoundError) NTP is used."""
+    backend = _make_backend(tmp_path)
+    # gpspipe not found, timedatectl reports NTP synced.
+    with patch(
+        "subprocess.run",
+        side_effect=[FileNotFoundError, _completed_proc("NTPSynchronized=yes\n")],
+    ):
+        status = backend.time_status()
+
+    assert status.trusted is True
+    assert status.source == TimeSource.NETWORK
+
+
+def test_time_status_gps_and_ntp_agree_no_mismatch(tmp_path: Path) -> None:
+    """No mismatch flag when GPS and NTP agree within 5 s."""
+    backend = _make_backend(tmp_path)
+    # GPS TPV fix is at 2026-05-13T22:00:00Z; we mock now() to be 1 s later
+    # so the delta is 1 s < 5 s — no mismatch should be reported.
+    fake_now = datetime(2026, 5, 13, 22, 0, 1, tzinfo=UTC)
+    gpspipe_resp = _completed_proc_lines(_GPS_TPV_FIX)
+    timedatectl_resp = _completed_proc("NTPSynchronized=yes\n")
+
+    with (
+        patch("subprocess.run", side_effect=[gpspipe_resp, timedatectl_resp]),
+        patch(
+            "kepler_node.agent.node_management.datetime",
+            wraps=datetime,
+        ) as mock_dt,
+    ):
+        mock_dt.now.return_value = fake_now
+        mock_dt.fromisoformat = datetime.fromisoformat
+        status = backend.time_status()
+
+    assert status.source == TimeSource.GPS
+    assert status.gps_ntp_mismatch_seconds is None
+
+
+def test_time_status_gps_surfaces_mismatch_when_disagreement_large(
+    tmp_path: Path,
+) -> None:
+    """gps_ntp_mismatch_seconds is set when GPS and NTP disagree by >5 s.
+
+    The GPS TPV message carries a time close to now; we force the delta by
+    patching ``datetime.now`` inside the backend module so the divergence is
+    controlled and deterministic.
+    """
+
+    backend = _make_backend(tmp_path)
+    # GPS time is 2026-05-13T22:00:00Z; we pretend now() is 10 s ahead.
+    fake_now = datetime(2026, 5, 13, 22, 0, 10, tzinfo=UTC)
+
+    gpspipe_resp = _completed_proc_lines(_GPS_TPV_FIX)
+    timedatectl_resp = _completed_proc("NTPSynchronized=yes\n")
+
+    with (
+        patch("subprocess.run", side_effect=[gpspipe_resp, timedatectl_resp]),
+        patch(
+            "kepler_node.agent.node_management.datetime",
+            wraps=datetime,
+        ) as mock_dt,
+    ):
+        mock_dt.now.return_value = fake_now
+        mock_dt.fromisoformat = datetime.fromisoformat
+        status = backend.time_status()
+
+    assert status.source == TimeSource.GPS
+    assert status.gps_ntp_mismatch_seconds is not None
+    assert status.gps_ntp_mismatch_seconds > 5.0
+
+
+def test_time_status_gps_tz_naive_timestamp_does_not_crash(tmp_path: Path) -> None:
+    """TPV timestamp without a 'Z' suffix must not crash time_status().
+
+    Some older gpsd versions or GPS drivers emit ISO 8601 timestamps without
+    a trailing 'Z', e.g. '2026-05-13T22:00:00.000'.  Without the tzinfo guard
+    the subsequent ``gps_time - now_utc`` subtraction would raise TypeError
+    (offset-naive vs offset-aware).  The backend must treat the time as UTC
+    and return a valid GPS TimeStatus.
+    """
+    backend = _make_backend(tmp_path)
+    gpspipe_resp = _completed_proc_lines(_GPS_TPV_FIX_TZ_NAIVE)
+    timedatectl_resp = _completed_proc("NTPSynchronized=yes\n")
+
+    with patch("subprocess.run", side_effect=[gpspipe_resp, timedatectl_resp]):
+        status = backend.time_status()
+
+    assert status.source == TimeSource.GPS
+    assert status.trusted is True

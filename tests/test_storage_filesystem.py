@@ -234,7 +234,7 @@ def test_install_manifest_accepts_health_checks_failed_result(tmp_path: Path) ->
     assert retrieved.last_upgrade_result == "health-checks-failed"
 
 
-def test_storage_and_quality_models_enforce_phase1_contracts() -> None:
+def test_storage_imaging_and_camera_domain_models_are_well_formed() -> None:
     from kepler_node.agent.interfaces import (
         DeviceActivityEvent,
         DeviceActivityEventType,

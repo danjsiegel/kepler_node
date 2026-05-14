@@ -12,13 +12,14 @@ in tests a ``ClawController`` with fake adapters is injected instead.
 
 from __future__ import annotations
 
+import socket as _socket
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query
 
 from kepler_node.agent.claw import ClawController
-from kepler_node.agent.interfaces import ReadinessCondition
+from kepler_node.agent.interfaces import ReadinessCondition, TimeSource, TimeStatus
 from kepler_node.agent.node_management import confirm_time_action
 from kepler_node.agent.session import ClawState, RuntimeSession, TerminalOutcome
 from kepler_node.api.models import (
@@ -44,6 +45,15 @@ from kepler_node.api.models import (
     TimeConfirmRequest,
     TimeConfirmResponse,
 )
+
+# Human-readable labels for operator-facing time-source warnings.
+_TIME_SOURCE_LABEL: dict[TimeSource, str] = {
+    TimeSource.GPS: "GPS",
+    TimeSource.NETWORK: "NTP/network",
+    TimeSource.RTC: "RTC",
+    TimeSource.OPERATOR_CONFIRMED: "operator-confirmed",
+    TimeSource.UNTRUSTED: "untrusted",
+}
 
 # States that indicate no active managed session
 _PRE_SESSION_STATES = {
@@ -81,8 +91,24 @@ def _get_detected_devices(controller: ClawController) -> dict[str, dict[str, boo
     }
 
 
-def _get_degraded(controller: ClawController) -> list[BlockerCondition]:
-    """Derive non-blocking degraded conditions from node backend state."""
+def _node_host() -> str:
+    """Return the node's primary network address for operator connection details.
+
+    Tries to discover the outbound interface IP first, then falls back to the
+    system hostname so the operator always has something actionable.
+    """
+    try:
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as s:
+            s.settimeout(0)
+            s.connect(("10.255.255.255", 1))
+            return s.getsockname()[0]
+    except Exception:
+        return _socket.gethostname()
+
+
+def _get_degraded(
+    controller: ClawController, *, time_st: TimeStatus | None = None
+) -> list[BlockerCondition]:
     degraded: list[BlockerCondition] = []
     storage = controller.node.storage_status()
     free_gb = storage.free_bytes / (1024**3)
@@ -95,13 +121,27 @@ def _get_degraded(controller: ClawController) -> list[BlockerCondition]:
                 summary=f"Storage is below 20 GiB ({free_gb:.1f} GiB free)",
             )
         )
-    time_st = controller.node.time_status()
-    if time_st.trusted and time_st.source not in {"ntp", "gps"}:
+    if time_st is None:
+        time_st = controller.node.time_status()
+    # GPS vs NTP disagreement: surface when both sources are available and differ >5 s.
+    if time_st.gps_ntp_mismatch_seconds is not None:
         degraded.append(
             BlockerCondition(
                 name="time_source_mismatch",
                 severity="degraded",
-                summary=f"Time source is {time_st.source!r}; NTP or GPS preferred",
+                summary=(
+                    f"GPS and network time disagree by "
+                    f"{time_st.gps_ntp_mismatch_seconds:.1f}s; using GPS (valid fix active)"
+                ),
+            )
+        )
+    elif time_st.trusted and time_st.source not in {TimeSource.NETWORK, TimeSource.GPS}:
+        # Weaker-than-preferred time source (RTC or operator_confirmed).
+        degraded.append(
+            BlockerCondition(
+                name="time_source_weaker",
+                severity="degraded",
+                summary=f"Time source is {_TIME_SOURCE_LABEL.get(time_st.source, time_st.source.value)}; NTP or GPS preferred",
             )
         )
     return degraded
@@ -253,28 +293,43 @@ def build_app(*, controller: ClawController) -> FastAPI:
                 ),
             }
 
+        # Service reachability for planner connection details
+        planner_services = controller.node.service_health()
+        planner_service_map = {s.name: s.healthy for s in planner_services}
+
         # Planner mode derived from bootstrap profile
         planner_mode: str | None = None
         planner_connection: dict[str, Any] | None = None
         if manifest is not None and manifest.bootstrap_profile:
             planner_mode = manifest.bootstrap_profile
+            node_host = _node_host()
+            indi_reachable = planner_service_map.get("indiserver")
+            kepler_reachable = planner_service_map.get("kepler-node")
+            xrdp_reachable = planner_service_map.get("xrdp")
             if planner_mode == "headless-node":
                 planner_connection = {
                     "mode": "remote_kstars_ekos",
+                    "host": node_host,
                     "summary": (
-                        "Connect KStars/Ekos remotely: set INDI server host to this "
-                        "node's IP address and port 7624"
+                        f"Connect KStars/Ekos remotely: set INDI server host to "
+                        f"{node_host} and port 7624"
                     ),
                     "indi_port": 7624,
+                    "indi_reachable": indi_reachable,
+                    "kepler_reachable": kepler_reachable,
                 }
             elif planner_mode == "field-fallback":
                 planner_connection = {
                     "mode": "on_node_kstars_ekos",
+                    "host": node_host,
                     "summary": (
-                        "Launch KStars/Ekos on this node via xRDP remote desktop: "
-                        "connect to this node's IP address on port 3389 (RDP)"
+                        f"Launch KStars/Ekos on this node via xRDP remote desktop: "
+                        f"connect to {node_host} on port 3389 (RDP)"
                     ),
                     "rdp_port": 3389,
+                    "indi_reachable": indi_reachable,
+                    "kepler_reachable": kepler_reachable,
+                    "xrdp_reachable": xrdp_reachable,
                 }
 
         build_summary = "kepler-node v1"
@@ -340,7 +395,7 @@ def build_app(*, controller: ClawController) -> FastAPI:
             calibrated=session.calibration_accepted,
             time_trusted=time_status.trusted,
             blockers=all_blockers,
-            degraded=_get_degraded(controller),
+            degraded=_get_degraded(controller, time_st=time_status),
             storage_summary={
                 "free_bytes": storage_status.free_bytes,
                 "total_bytes": storage_status.total_bytes,

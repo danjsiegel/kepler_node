@@ -14,6 +14,7 @@ from kepler_node.agent.claw import ClawController
 from kepler_node.agent.interfaces import (
     NetworkMode,
     PowerStatus,
+    ServiceHealth,
     StorageStatus,
     TimeSource,
     TimeStatus,
@@ -39,6 +40,9 @@ from kepler_node.storage.models import (
 
 
 class FakeNodeBackend:
+    def __init__(self, *, service_healths: list | None = None) -> None:
+        self._service_healths = service_healths or []
+
     def network_mode(self) -> NetworkMode:
         return NetworkMode.FIELD_HOTSPOT
 
@@ -58,7 +62,7 @@ class FakeNodeBackend:
         return PowerStatus(healthy=True, summary="ok", undervoltage_detected=False)
 
     def service_health(self) -> list:
-        return []
+        return self._service_healths
 
     def confirm_time(self, timestamp: datetime) -> TimeStatus:
         return self.time_status()
@@ -438,3 +442,98 @@ def test_api_node_status_no_manifest_returns_none(tmp_path: Path) -> None:
     data = resp.json()
     assert data["planner_mode"] is None
     assert data["install_manifest"] is None
+
+
+def test_api_node_status_planner_connection_includes_service_reachability(
+    tmp_path: Path,
+) -> None:
+    """planner_connection_details exposes indi_reachable and kepler_reachable
+    when the node backend reports those service states."""
+    node = FakeNodeBackend(
+        service_healths=[
+            ServiceHealth(name="indiserver", healthy=True, summary="active"),
+            ServiceHealth(name="kepler-node", healthy=False, summary="inactive"),
+        ]
+    )
+    base = tmp_path
+    base.mkdir(parents=True, exist_ok=True)
+    vdir = base / "verify"
+    vdir.mkdir(parents=True, exist_ok=True)
+    ctrl = ClawController(
+        session=RuntimeSession(),
+        node_backend=node,
+        mount_backend=FakeMountBackend(),
+        camera_backend=FakeCameraBackend(),
+        solver_backend=FakeSolverBackend(),
+        store=FilesystemSessionStore(data_root=base),
+        authorship_tracker=AuthorshipTracker(),
+        verification_dir=vdir,
+    )
+    manifest = InstallManifest(
+        kepler_version="1.0.0",
+        release_id="v1.0.0",
+        bootstrap_profile="headless-node",
+        installed_at=datetime.now(UTC),
+    )
+    ctrl.store.write_install_manifest(manifest)
+
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.get("/api/v1/node/status")
+    assert resp.status_code == 200
+    conn = resp.json()["planner_connection_details"]
+    assert conn is not None
+    assert conn["indi_reachable"] is True
+    assert conn["kepler_reachable"] is False
+
+
+def test_api_node_status_field_fallback_includes_xrdp_reachability(
+    tmp_path: Path,
+) -> None:
+    """field-fallback planner_connection_details exposes xrdp_reachable (spec §237)."""
+    node = FakeNodeBackend(
+        service_healths=[
+            ServiceHealth(name="indiserver", healthy=True, summary="active"),
+            ServiceHealth(name="kepler-node", healthy=True, summary="active"),
+            ServiceHealth(name="xrdp", healthy=True, summary="active"),
+        ]
+    )
+    base = tmp_path
+    base.mkdir(parents=True, exist_ok=True)
+    vdir = base / "verify"
+    vdir.mkdir(parents=True, exist_ok=True)
+    ctrl = ClawController(
+        session=RuntimeSession(),
+        node_backend=node,
+        mount_backend=FakeMountBackend(),
+        camera_backend=FakeCameraBackend(),
+        solver_backend=FakeSolverBackend(),
+        store=FilesystemSessionStore(data_root=base),
+        authorship_tracker=AuthorshipTracker(),
+        verification_dir=vdir,
+    )
+    manifest = InstallManifest(
+        kepler_version="1.0.0",
+        release_id="v1.0.0",
+        bootstrap_profile="field-fallback",
+        installed_at=datetime.now(UTC),
+    )
+    ctrl.store.write_install_manifest(manifest)
+
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.get("/api/v1/node/status")
+    assert resp.status_code == 200
+    conn = resp.json()["planner_connection_details"]
+    assert conn is not None
+    assert conn["indi_reachable"] is True
+    assert conn["kepler_reachable"] is True
+    assert conn["xrdp_reachable"] is True
+
+
+def test_settings_default_managed_service_names_includes_kepler_and_xrdp() -> None:
+    """Settings default includes kepler-node and xrdp so _serve.py wires them correctly."""
+    from kepler_node.config import Settings
+
+    settings = Settings()
+    assert "kepler-node" in settings.managed_service_names
+    assert "xrdp" in settings.managed_service_names
+    assert "indiserver" in settings.managed_service_names

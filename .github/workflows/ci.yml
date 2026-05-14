@@ -30,3 +30,6 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+      - name: Operator-mode planner proof
+        run: uv run pytest tests/test_ui_streamlit.py::test_headless_mode_flow_renders_actionable_planner_guidance tests/test_ui_streamlit.py::test_field_mode_flow_renders_actionable_local_planner_guidance -v
