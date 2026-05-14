@@ -1,8 +1,8 @@
-"""Headless smoke tests for the Kepler Node Streamlit UI.
+"""Integration-oriented tests for the Kepler Node Streamlit UI.
 
 Uses ``streamlit.testing.v1.AppTest`` with a mocked ``KeplerApiClient`` to
-verify that all three tabs (Overview, Session, Review) render without raising
-an exception in the common ``ready``/no-active-session posture.
+verify that the real UI renders without raising and that both supported planner
+modes are actionable in the operator console.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+import streamlit as st
 
 try:
     from streamlit.testing.v1 import AppTest
@@ -66,6 +67,39 @@ def _make_mock_client() -> MagicMock:
     return client
 
 
+def _make_mode_client(*, planner_mode: str, planner_connection_details: dict[str, object]) -> MagicMock:
+    client = _make_mock_client()
+    client.get_node_status.return_value = {
+        **client.get_node_status.return_value,
+        "planner_mode": planner_mode,
+        "planner_connection_details": planner_connection_details,
+        "install_manifest": {
+            "kepler_version": "1.2.3",
+            "bootstrap_profile": planner_mode,
+            "installed_at": "2026-05-13T00:00:00+00:00",
+        },
+        "active_equipment_profile": {
+            "profile_id": "starter-rig",
+            "display_name": "Starter Rig",
+            "lens_is_zoom": False,
+            "focal_length_mm": 135,
+        },
+    }
+    client.get_target_current.return_value = {
+        "target_label": "M31",
+        "ra_hours": 0.7122,
+        "dec_deg": 41.269,
+        "target_source": "kstars_ekos" if planner_mode == "headless-node" else "manual",
+        "run_parameters": {
+            "exposure_seconds": 120,
+            "camera_settings": {"gain": 100},
+            "stop_condition": {"frame_count": 60},
+        },
+        "active_equipment_profile_id": "starter-rig",
+    }
+    return client
+
+
 # ------------------------------------------------------------------ #
 # Smoke tests                                                          #
 # ------------------------------------------------------------------ #
@@ -73,6 +107,7 @@ def _make_mock_client() -> MagicMock:
 
 def _run_app_with_mock_client(mock_client: MagicMock) -> AppTest:
     """Run the Streamlit app in a headless AppTest with a patched KeplerApiClient."""
+    st.cache_resource.clear()
     with patch(
         "kepler_node.ui.api_client.KeplerApiClient",
         return_value=mock_client,
@@ -82,6 +117,7 @@ def _run_app_with_mock_client(mock_client: MagicMock) -> AppTest:
             default_timeout=10,
         )
         at.run()
+    st.cache_resource.clear()
     return at
 
 
@@ -124,3 +160,49 @@ def test_overview_renders_node_status_metrics() -> None:
     assert any("Status" in lbl or "State" in lbl or "Health" in lbl for lbl in metric_labels), (
         f"Expected status/health metric in Overview; found labels: {metric_labels}"
     )
+
+
+def test_headless_mode_flow_renders_actionable_planner_guidance() -> None:
+    at = _run_app_with_mock_client(
+        _make_mode_client(
+            planner_mode="headless-node",
+            planner_connection_details={
+                "mode": "remote_kstars_ekos",
+                "summary": "Connect KStars/Ekos remotely: set INDI server host to this node's IP address and port 7624",
+                "indi_port": 7624,
+            },
+        )
+    )
+
+    assert not at.exception
+    markdown_values = [m.value for m in at.markdown]
+    info_values = [i.value for i in at.info]
+    metric_values = [str(m.value) for m in at.metric]
+
+    assert any("Headless Remote Planner" in value for value in markdown_values), markdown_values
+    assert any("Use Remote KStars/Ekos" in value for value in markdown_values), markdown_values
+    assert any("INDI server host" in value for value in info_values), info_values
+    assert any("7624" in value for value in metric_values), metric_values
+
+
+def test_field_mode_flow_renders_actionable_local_planner_guidance() -> None:
+    at = _run_app_with_mock_client(
+        _make_mode_client(
+            planner_mode="field-fallback",
+            planner_connection_details={
+                "mode": "on_node_kstars_ekos",
+                "summary": "Launch KStars/Ekos on this node via xRDP remote desktop: connect to this node's IP address on port 3389 (RDP)",
+                "rdp_port": 3389,
+            },
+        )
+    )
+
+    assert not at.exception
+    markdown_values = [m.value for m in at.markdown]
+    info_values = [i.value for i in at.info]
+    metric_values = [str(m.value) for m in at.metric]
+
+    assert any("Field Local-First" in value for value in markdown_values), markdown_values
+    assert any("Open Local Planner Session" in value for value in markdown_values), markdown_values
+    assert any("xRDP remote desktop" in value for value in info_values), info_values
+    assert any("3389" in value for value in metric_values), metric_values

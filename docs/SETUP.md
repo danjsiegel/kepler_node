@@ -1,10 +1,10 @@
 # Setup
 
-This document describes the intended Kepler Node setup experience and the current development posture.
+This document describes the supported Kepler Node setup posture and the current v1 readiness boundary.
 
 ## Goal
 
-The v1 product goal is a profile-based bootstrap flow on a 64-bit Raspberry Pi OS Lite install.
+The v1 install posture is a profile-based bootstrap flow on a 64-bit Raspberry Pi OS Lite install.
 
 The intended operator experience is:
 
@@ -33,9 +33,9 @@ Kepler Node is intended to support two operator modes.
 - The remote client connects to the node-side services.
 - Kepler still owns control-lock, verification, correction, and recovery.
 
-## Development Quick Start
+## Supported Node Install And Upgrade
 
-Phase 5 provides `bootstrap.sh` and `upgrade.sh` at the repo root.
+`bootstrap.sh` and `upgrade.sh` at the repo root are the supported install and upgrade entry points.
 
 ### Supported Profiles
 
@@ -85,7 +85,17 @@ Upgrade steps:
 5. Restarts managed services in dependency order (`indiserver` → `kepler-node` → `kepler-ui` if present)
 6. Runs post-upgrade health checks; on success, persists `success` outcome; on failure, persists `health-checks-failed` and exits 1
 
-## Development Quick Start
+## Current Readiness Posture
+
+The repo now includes the main install, upgrade, profile, target-intake, session-start, and operator-runbook surfaces required by the v1 handoff.
+
+What still needs to be proven before calling the product truly v1-ready is narrower:
+
+- GPS-backed time and location need to be exercised as a real node capability rather than remaining mostly a contract and fallback path.
+- Both supported planner modes need full end-to-end validation on a bootstrapped Raspberry Pi install, not just repo-local tests and docs.
+- Bootstrap and upgrade health checks need continued real-hardware shakeout so the documented install story stays reproducible.
+
+## Repo Development Quick Start
 
 The current repo is still development-first rather than turnkey deployment-first.
 

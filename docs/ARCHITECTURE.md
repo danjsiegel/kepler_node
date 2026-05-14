@@ -79,6 +79,8 @@ flowchart TD
 	Paused --> Failed[failed]
 ```
 
-## Near-Term Goal
+## Current Readiness Posture
 
-Build enough internal structure to test automation ideas without prematurely committing to camera, mount, or model integrations.
+Kepler is no longer just a control-core prototype. The current repo already contains the main controller, local API, Streamlit operator surfaces, equipment-profile flow, target staging, session start, and the bootstrap or upgrade scripts needed for the supported node profiles.
+
+The remaining v1 work is mostly proof and hardening rather than missing major surfaces: GPS-backed trusted time and location still need real node validation, and both supported planner modes still need repeated end-to-end verification on a bootstrapped Raspberry Pi install.

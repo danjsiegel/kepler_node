@@ -64,7 +64,9 @@ uv run kepler-node --help
 uv run pytest
 ```
 
-This is the current development quick start. The Phase 5 goal is a profile-based bootstrap flow for a complete Pi deployment and operator-ready runbooks.
+This is the repo development quick start. For Pi installation, bootstrap profiles, and operator workflows, see [docs/SETUP.md](docs/SETUP.md) and [docs/RUNBOOKS.md](docs/RUNBOOKS.md).
+
+The current v1 posture is closer to product-complete than prototype-complete: the major control, API, UI, profile, target-intake, and deployment surfaces now exist. The remaining readiness work is mostly on-hardware proof and hardening, especially around GPS-backed trusted time and end-to-end validation of the two supported planner modes on a bootstrapped node.
 
 ## Local API And UI
 

@@ -15,6 +15,49 @@ from kepler_node.storage import (
     SessionRecord,
     SessionScope,
 )
+from kepler_node.storage.models import (
+    EquipmentProfile,
+    EquipmentProfileBackendPreferences,
+    EquipmentProfileHardware,
+    EquipmentProfileHardwareCamera,
+    EquipmentProfileHardwareGps,
+    EquipmentProfileHardwareLens,
+    EquipmentProfileHardwareMount,
+    EquipmentProfileSiteDefaults,
+    EquipmentProfileSolvingHints,
+    InstallManifest,
+)
+
+
+def _make_profile(
+    profile_id: str = "test-profile",
+    display_name: str = "Test Profile",
+    is_default: bool = False,
+    is_zoom: bool = False,
+    focal_length_assumption_mm: float | None = None,
+) -> EquipmentProfile:
+    return EquipmentProfile(
+        profile_id=profile_id,
+        display_name=display_name,
+        is_default=is_default,
+        hardware=EquipmentProfileHardware(
+            mount=EquipmentProfileHardwareMount(model="EQ6-R"),
+            camera=EquipmentProfileHardwareCamera(make="ZWO", model="ASI294MC"),
+            lens=EquipmentProfileHardwareLens(
+                model="Rokinon 135mm f/2",
+                is_zoom=is_zoom,
+                default_focal_length_mm=None if is_zoom else 135,
+            ),
+            gps=EquipmentProfileHardwareGps(),
+        ),
+        site_defaults=EquipmentProfileSiteDefaults(),
+        solving_hints=EquipmentProfileSolvingHints(
+            focal_length_assumption_mm=focal_length_assumption_mm,
+        ),
+        backend_preferences=EquipmentProfileBackendPreferences(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
 
 
 def test_filesystem_session_store_writes_v1_layout(tmp_path: Path) -> None:
@@ -98,6 +141,97 @@ def test_filesystem_session_store_raises_for_unknown_session(tmp_path: Path) -> 
                 message="Missing session",
             ),
         )
+
+
+def test_equipment_profile_write_and_read(tmp_path: Path) -> None:
+    store = FilesystemSessionStore(data_root=tmp_path)
+    profile = _make_profile()
+    store.write_profile(profile)
+
+    retrieved = store.read_profile("test-profile")
+    assert retrieved is not None
+    assert retrieved.display_name == "Test Profile"
+    assert retrieved.hardware.mount.model == "EQ6-R"
+
+
+def test_equipment_profile_list(tmp_path: Path) -> None:
+    store = FilesystemSessionStore(data_root=tmp_path)
+    store.write_profile(_make_profile("p1", "Profile 1"))
+    store.write_profile(_make_profile("p2", "Profile 2"))
+
+    profiles = store.list_profiles()
+    ids = {p.profile_id for p in profiles}
+    assert ids == {"p1", "p2"}
+
+
+def test_equipment_profile_delete(tmp_path: Path) -> None:
+    store = FilesystemSessionStore(data_root=tmp_path)
+    store.write_profile(_make_profile())
+    store.delete_profile("test-profile")
+    assert store.read_profile("test-profile") is None
+
+
+def test_equipment_profile_default_flag_exclusivity(tmp_path: Path) -> None:
+    """At most one profile may have is_default=True."""
+    store = FilesystemSessionStore(data_root=tmp_path)
+    store.write_profile(_make_profile("p1", "Profile 1", is_default=True))
+    store.write_profile(_make_profile("p2", "Profile 2", is_default=True))
+
+    profiles = store.list_profiles()
+    defaults = [p for p in profiles if p.is_default]
+    assert len(defaults) == 1, f"Expected exactly 1 default; got {[p.profile_id for p in defaults]}"
+    assert defaults[0].profile_id == "p2"
+
+
+def test_install_manifest_round_trip(tmp_path: Path) -> None:
+    store = FilesystemSessionStore(data_root=tmp_path)
+    assert store.read_install_manifest() is None
+
+    manifest = InstallManifest(
+        kepler_version="1.0.0",
+        release_id="v1.0.0",
+        bootstrap_profile="headless-node",
+        installed_at=datetime.now(UTC),
+    )
+    store.write_install_manifest(manifest)
+
+    retrieved = store.read_install_manifest()
+    assert retrieved is not None
+    assert retrieved.kepler_version == "1.0.0"
+    assert retrieved.bootstrap_profile == "headless-node"
+    assert retrieved.last_upgrade_at is None
+
+
+def test_install_manifest_accepts_in_progress_result(tmp_path: Path) -> None:
+    """InstallManifest persists 'in-progress' as last_upgrade_result."""
+    store = FilesystemSessionStore(data_root=tmp_path)
+    manifest = InstallManifest(
+        kepler_version="1.0.0",
+        release_id="v1.0.0",
+        bootstrap_profile="headless-node",
+        installed_at=datetime.now(UTC),
+        last_upgrade_result="in-progress",
+    )
+    store.write_install_manifest(manifest)
+    retrieved = store.read_install_manifest()
+    assert retrieved is not None
+    assert retrieved.last_upgrade_result == "in-progress"
+
+
+def test_install_manifest_accepts_health_checks_failed_result(tmp_path: Path) -> None:
+    """InstallManifest persists 'health-checks-failed' as last_upgrade_result."""
+    store = FilesystemSessionStore(data_root=tmp_path)
+    manifest = InstallManifest(
+        kepler_version="1.0.0",
+        release_id="v1.0.0",
+        bootstrap_profile="field-fallback",
+        installed_at=datetime.now(UTC),
+        last_upgrade_result="health-checks-failed",
+    )
+    store.write_install_manifest(manifest)
+    retrieved = store.read_install_manifest()
+    assert retrieved is not None
+    assert retrieved.last_upgrade_result == "health-checks-failed"
 
 
 def test_storage_and_quality_models_enforce_phase1_contracts() -> None:

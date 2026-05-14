@@ -23,7 +23,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --extra local-api --extra ui
 
       - name: Lint
         run: uv run ruff check .

@@ -32,12 +32,14 @@ from kepler_node.mount.protocols import MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
 from kepler_node.storage.models import (
     EquipmentProfile,
+    EquipmentProfileBackendPreferences,
     EquipmentProfileHardware,
     EquipmentProfileHardwareCamera,
     EquipmentProfileHardwareGps,
     EquipmentProfileHardwareLens,
     EquipmentProfileHardwareMount,
     EquipmentProfileSiteDefaults,
+    EquipmentProfileSolvingHints,
     SessionRecord,
 )
 
@@ -228,6 +230,37 @@ def _failed_solve(category: SolveFailureCategory) -> SolveResult:
     return SolveResult(success=False, failure_category=category)
 
 
+def _make_profile(
+    profile_id: str = "test-profile",
+    display_name: str = "Test Profile",
+    is_default: bool = False,
+    is_zoom: bool = False,
+    focal_length_assumption_mm: float | None = None,
+) -> EquipmentProfile:
+    return EquipmentProfile(
+        profile_id=profile_id,
+        display_name=display_name,
+        is_default=is_default,
+        hardware=EquipmentProfileHardware(
+            mount=EquipmentProfileHardwareMount(model="EQ6-R"),
+            camera=EquipmentProfileHardwareCamera(make="ZWO", model="ASI294MC"),
+            lens=EquipmentProfileHardwareLens(
+                model="Rokinon 135mm f/2",
+                is_zoom=is_zoom,
+                default_focal_length_mm=None if is_zoom else 135,
+            ),
+            gps=EquipmentProfileHardwareGps(),
+        ),
+        site_defaults=EquipmentProfileSiteDefaults(),
+        solving_hints=EquipmentProfileSolvingHints(
+            focal_length_assumption_mm=focal_length_assumption_mm,
+        ),
+        backend_preferences=EquipmentProfileBackendPreferences(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
 @pytest.fixture()
 def tmp_verification_dir(tmp_path: Path) -> Path:
     d = tmp_path / "verification"
@@ -280,6 +313,130 @@ def test_boot_transitions_to_discover(tmp_path: Path) -> None:
     assert result.previous_state == ClawState.BOOT
     assert result.next_state == ClawState.DISCOVER
     assert ctrl.session.state == ClawState.DISCOVER
+
+
+def test_zoom_lens_gate_blocks_without_assumption(tmp_path: Path) -> None:
+    """check_readiness returns focal_length_assumption_required blocker for zoom lens."""
+    ctrl = _make_controller(tmp_path=tmp_path)
+    ctrl.active_equipment_profile = _make_profile(is_zoom=True, focal_length_assumption_mm=None)
+
+    conditions = ctrl.check_readiness()
+    blocker_names = [c.name for c in conditions]
+    assert "focal_length_assumption_required" in blocker_names
+
+
+def test_zoom_lens_gate_passes_with_assumption(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path=tmp_path)
+    ctrl.active_equipment_profile = _make_profile(is_zoom=True, focal_length_assumption_mm=200.0)
+
+    conditions = ctrl.check_readiness()
+    blocker_names = [c.name for c in conditions]
+    assert "focal_length_assumption_required" not in blocker_names
+
+
+def test_fixed_lens_no_zoom_gate(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path=tmp_path)
+    ctrl.active_equipment_profile = _make_profile(is_zoom=False)
+
+    conditions = ctrl.check_readiness()
+    blocker_names = [c.name for c in conditions]
+    assert "focal_length_assumption_required" not in blocker_names
+
+
+def test_stage_and_clear_target(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path=tmp_path)
+    ctrl.stage_target_intake(
+        target_label="M31",
+        ra_hours=0.7122,
+        dec_deg=41.269,
+        target_source="manual",
+        run_parameters={
+            "exposure_seconds": 120,
+            "camera_settings": {"gain": 100},
+            "stop_condition": {"frame_count": 60},
+        },
+    )
+    assert ctrl.session.staged_target_ra_hours == pytest.approx(0.7122)
+    assert ctrl._staged_target_label == "M31"
+
+    ctrl.clear_staged_target()
+    assert ctrl.session.staged_target_ra_hours is None
+    assert ctrl._staged_target_label is None
+
+
+def test_start_session_requires_ready_state(tmp_path: Path) -> None:
+    """start_session raises ValueError when state is not ready."""
+    ctrl = _make_controller(
+        session=RuntimeSession(state=ClawState.BOOT),
+        tmp_path=tmp_path,
+    )
+    with pytest.raises(ValueError, match="ready"):
+        ctrl.start_session()
+
+
+def test_start_session_requires_staged_target(tmp_path: Path) -> None:
+    ctrl = _make_controller(
+        session=RuntimeSession(state=ClawState.READY),
+        tmp_path=tmp_path,
+    )
+    with pytest.raises((ValueError, RuntimeError)):
+        ctrl.start_session()
+
+
+def test_discover_auto_selects_single_default_profile(tmp_path: Path) -> None:
+    """discover() loads the one profile marked is_default and sets it as active."""
+    ctrl = _make_controller(session=RuntimeSession(state=ClawState.DISCOVER), tmp_path=tmp_path)
+    ctrl.store.write_profile(_make_profile(profile_id="rig-a", is_default=True))
+
+    result = ctrl.discover()
+
+    assert result.next_state == ClawState.CONNECT
+    assert ctrl.active_equipment_profile is not None
+    assert ctrl.active_equipment_profile.profile_id == "rig-a"
+    names = [c.name for c in result.degraded]
+    assert "multiple_default_profiles" not in names
+    assert "no_default_equipment_profile" not in names
+
+
+def test_discover_degrades_on_multiple_default_profiles(tmp_path: Path) -> None:
+    """discover() surfaces a degraded condition when more than one profile is default."""
+    ctrl = _make_controller(session=RuntimeSession(state=ClawState.DISCOVER), tmp_path=tmp_path)
+    for pid in ("rig-a", "rig-b"):
+        profile = _make_profile(profile_id=pid, is_default=True)
+        path = ctrl.store.profiles_root / f"{pid}.json"
+        ctrl.store.profiles_root.mkdir(parents=True, exist_ok=True)
+        path.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+
+    result = ctrl.discover()
+
+    assert result.next_state == ClawState.PAUSED
+    names = [c.name for c in result.degraded]
+    assert "multiple_default_profiles" in names
+
+
+def test_discover_degrades_when_profiles_exist_but_none_is_default(tmp_path: Path) -> None:
+    """discover() surfaces a degraded condition when profiles exist but none is default."""
+    ctrl = _make_controller(session=RuntimeSession(state=ClawState.DISCOVER), tmp_path=tmp_path)
+    ctrl.store.write_profile(_make_profile(profile_id="rig-a", is_default=False))
+
+    result = ctrl.discover()
+
+    assert result.next_state == ClawState.PAUSED
+    assert ctrl.active_equipment_profile is None
+    names = [c.name for c in result.degraded]
+    assert "no_default_equipment_profile" in names
+
+
+def test_discover_no_profiles_pauses_with_no_default_equipment_profile(tmp_path: Path) -> None:
+    """discover() with zero stored profiles pauses with no_default_equipment_profile."""
+    ctrl = _make_controller(session=RuntimeSession(state=ClawState.DISCOVER), tmp_path=tmp_path)
+
+    result = ctrl.discover()
+
+    assert result.next_state == ClawState.PAUSED
+    names = [c.name for c in result.degraded]
+    assert "no_default_equipment_profile" in names
+    assert ctrl.active_equipment_profile is None
 
 
 def test_discover_transitions_to_connect(tmp_path: Path) -> None:

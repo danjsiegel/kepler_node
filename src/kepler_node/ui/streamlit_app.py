@@ -2,8 +2,10 @@
 
 Entrypoint: ``streamlit run src/kepler_node/ui/streamlit_app.py``
 
-Three mobile-first surfaces are provided as tabs:
-- **Overview**: node readiness, blockers, calibration action, time/power status.
+Five mobile-first surfaces are provided as tabs:
+- **Overview**: node readiness, blockers, calibration action, planner mode, time, and power status.
+- **Equipment**: active profile visibility and profile selection.
+- **Target**: staged target review, run-plan summary, and session start.
 - **Session**: current Claw state, workflow intent, session controls.
 - **Review**: latest frames, artifacts, outcome, and terminal acknowledgment actions.
 
@@ -90,6 +92,48 @@ def _show_blockers(blockers: list[dict[str, Any]]) -> None:
 def _show_degraded(degraded: list[dict[str, Any]]) -> None:
     for d in degraded:
         st.warning(f"⚠️ **{d['name']}**: {d['summary']}")
+
+
+def _planner_mode_copy(
+    planner_mode: str,
+    planner_conn: dict[str, Any] | None,
+) -> tuple[str, str, list[str], list[tuple[str, str]]]:
+    if planner_mode == "headless-node":
+        return (
+            "Headless Remote Planner",
+            "Use Remote KStars/Ekos",
+            [
+                "Open KStars/Ekos on a laptop or another trusted client.",
+                "Add the node as a remote INDI server using the host and port below.",
+                "Return here to review the staged target and start the managed session.",
+            ],
+            [
+                ("Planner Transport", "Remote KStars/Ekos over INDI"),
+                ("INDI Port", str(planner_conn.get("indi_port", "—")) if planner_conn else "—"),
+            ],
+        )
+
+    if planner_mode == "field-fallback":
+        return (
+            "Field Local-First",
+            "Open Local Planner Session",
+            [
+                "Connect to the node with an RDP client using the port below.",
+                "Use the on-node KStars/Ekos session to choose framing and capture intent.",
+                "Return here for calibration, verification, and managed session control.",
+            ],
+            [
+                ("Planner Transport", "On-node KStars/Ekos via xRDP"),
+                ("RDP Port", str(planner_conn.get("rdp_port", "—")) if planner_conn else "—"),
+            ],
+        )
+
+    return (
+        planner_mode,
+        "Planner Guidance",
+        [planner_conn.get("summary", "Planner details unavailable") if planner_conn else "Planner details unavailable"],
+        [],
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -260,6 +304,19 @@ with overview_tab:
             if planner_conn.get("rdp_port"):
                 st.code(f"xRDP port: {planner_conn['rdp_port']}")
 
+        planner_title, planner_action, planner_steps, planner_metrics = _planner_mode_copy(
+            planner_mode,
+            planner_conn,
+        )
+        st.markdown(f"### {planner_title}")
+        st.markdown(f"**Next Action:** {planner_action}")
+        metric_columns = st.columns(max(1, len(planner_metrics)))
+        for column, (label, value) in zip(metric_columns, planner_metrics, strict=False):
+            with column:
+                st.metric(label, value)
+        for index, step in enumerate(planner_steps, start=1):
+            st.markdown(f"{index}. {step}")
+
     # --- Node build info ---
     inst = node_status.get("install_manifest")
     if inst:
@@ -379,6 +436,34 @@ with target_tab:
         with col_dec:
             st.metric("Dec (°)", f"{current_target.get('dec_deg', 0):.4f}")
         st.caption(f"Source: {current_target.get('target_source', '—')}")
+        run_params = current_target.get("run_parameters", {})
+        if run_params:
+            st.markdown("**Run Plan Summary**")
+            col_exp, col_cam, col_stop = st.columns(3)
+            with col_exp:
+                st.metric("Exposure", f"{run_params.get('exposure_seconds', '—')} s")
+            with col_cam:
+                st.metric(
+                    "Camera Settings",
+                    ", ".join(
+                        f"{key}={value}" for key, value in run_params.get("camera_settings", {}).items()
+                    )
+                    or "—",
+                )
+            with col_stop:
+                stop_condition = run_params.get("stop_condition", {})
+                st.metric(
+                    "Stop Condition",
+                    ", ".join(f"{key}={value}" for key, value in stop_condition.items()) or "—",
+                )
+            if current_target.get("target_source") == "kstars_ekos":
+                st.info(
+                    "Target intent came from KStars/Ekos. Kepler will still verify framing locally before capture."
+                )
+            else:
+                st.info(
+                    "This target was staged locally in Kepler. The node will still verify framing locally before capture."
+                )
 
         if st.button("🗑 Clear Target", key="clear_target_btn"):
             try:
@@ -391,7 +476,6 @@ with target_tab:
         if current_state_t == "ready":
             st.divider()
             st.subheader("▶ Start Session")
-            run_params = current_target.get("run_parameters", {})
             has_run_params = bool(
                 run_params.get("exposure_seconds")
                 and run_params.get("camera_settings")

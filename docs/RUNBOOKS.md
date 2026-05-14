@@ -2,7 +2,7 @@
 
 This document captures the intended operator runbooks for Kepler Node v1.
 
-These runbooks are part of the Phase 5 product surface. They are here so setup and operation do not depend on internal notes or ad hoc memory.
+These runbooks exist so setup and operation do not depend on internal notes or ad hoc memory.
 
 ## Runbook 1: First Boot
 
@@ -117,4 +117,4 @@ Use this when handing control back to the operator or an external client.
 
 These are the intended v1 operator runbooks.
 
-As Phase 5 lands, this file should be updated alongside the real bootstrap flow, planner-launch affordances, and upgrade tooling so the documented runbooks always match the supported product experience.
+Keep this file updated alongside the real bootstrap flow, planner-mode affordances, and upgrade tooling so the documented runbooks always match the supported product experience.
