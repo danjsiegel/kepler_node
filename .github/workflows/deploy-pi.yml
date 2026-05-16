@@ -1,0 +1,49 @@
+name: Deploy Pi
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch or tag to deploy through upgrade.sh
+        required: false
+        default: main
+      expect_profile:
+        description: Expected bootstrap profile after deploy
+        type: choice
+        required: true
+        default: headless-node
+        options:
+          - headless-node
+          - field-fallback
+      require_gps_fix:
+        description: Require a live GPS TPV fix during the post-deploy smoke check
+        type: boolean
+        default: false
+      require_rtc_sync:
+        description: Require RTCSynchronized=yes during the post-deploy smoke check
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    runs-on:
+      - self-hosted
+      - Linux
+      - ARM64
+      - kepler-pi
+    timeout-minutes: 20
+    concurrency:
+      group: kepler-pi-deploy
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Deploy installed node
+        run: |
+          bash scripts/deploy_pi.sh \
+            --target-ref "${{ inputs.target_ref }}" \
+            --expect-profile "${{ inputs.expect_profile }}" \
+            ${{ inputs.require_gps_fix && '--require-gps-fix' || '' }} \
+            ${{ inputs.require_rtc_sync && '--require-rtc-sync' || '' }}

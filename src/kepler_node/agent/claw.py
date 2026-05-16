@@ -89,6 +89,29 @@ class ClawController:
     SETTLE_AFTER_SLEW_SECONDS = 5.0
     SETTLE_AFTER_CORRECTION_SECONDS = 2.5
 
+    @staticmethod
+    def _camera_operator_blocker(exc: Exception) -> ReadinessCondition | None:
+        msg = str(exc)
+        if "camera_autocapture_mode_blocking" in msg:
+            return ReadinessCondition(
+                name="camera_autocapture_mode_blocking",
+                severity="blocking",
+                summary=msg.split(": ", 1)[1] if ": " in msg else msg,
+                operator_action_required=(
+                    "Set Drive Mode to Single Shot (not Self-timer), keep USB tether mode enabled, and leave shutter/ISO/aperture in tether-compatible positions such as A or command control"
+                ),
+            )
+        if "camera_remote_mode_required" in msg:
+            return ReadinessCondition(
+                name="camera_remote_mode_required",
+                severity="blocking",
+                summary=msg,
+                operator_action_required=(
+                    "Switch camera to USB remote-control mode and retry"
+                ),
+            )
+        return None
+
     def __init__(
         self,
         *,
@@ -283,7 +306,18 @@ class ClawController:
             self.camera.connect()
         except RuntimeError as exc:
             msg = str(exc)
-            if "camera_remote_mode_required" in msg or "remote" in msg.lower():
+            if "camera_autocapture_mode_blocking" in msg:
+                blockers.append(
+                    ReadinessCondition(
+                        name="camera_autocapture_mode_blocking",
+                        severity="blocking",
+                        summary=msg,
+                        operator_action_required=(
+                            "Set Drive Dial to S (Single Shot), keep USB tether mode enabled, and replug USB if needed"
+                        ),
+                    )
+                )
+            elif "camera_remote_mode_required" in msg or "remote" in msg.lower():
                 blockers.append(
                     ReadinessCondition(
                         name="camera_remote_mode_required",
@@ -380,6 +414,54 @@ class ClawController:
                     details={"undervoltage": str(power_st.undervoltage_detected)},
                 )
             )
+
+        diagnostic_status = getattr(self.camera, "diagnostic_status", None)
+        if callable(diagnostic_status):
+            try:
+                camera_diag = diagnostic_status()
+            except Exception as exc:
+                blockers.append(
+                    ReadinessCondition(
+                        name="camera_diagnostic_failed",
+                        severity="blocking",
+                        summary=f"Camera diagnostic probe failed: {exc}",
+                        operator_action_required="Check camera USB connection and retry",
+                    )
+                )
+            else:
+                if camera_diag and camera_diag.get("status") in {"card_reader_mode", "detected_unknown_mode"}:
+                    blockers.append(
+                        ReadinessCondition(
+                            name="camera_remote_mode_required",
+                            severity="blocking",
+                            summary=camera_diag.get(
+                                "summary",
+                                "Camera is not in a supported USB remote-control mode",
+                            ),
+                            operator_action_required=(
+                                "Switch camera to USB tether/remote-control mode and retry"
+                            ),
+                            details={"camera_status": str(camera_diag.get("status"))},
+                        )
+                    )
+                if camera_diag and camera_diag.get("status") == "autocapture_mode":
+                    blockers.append(
+                        ReadinessCondition(
+                            name="camera_autocapture_mode_blocking",
+                            severity="blocking",
+                            summary=camera_diag.get(
+                                "summary",
+                                "Camera is in a blocked self-timer/autocapture mode",
+                            ),
+                            operator_action_required=(
+                                camera_diag.get(
+                                    "operator_hint",
+                                    "Set Drive Mode to Single Shot (not Self-timer), keep USB tether mode enabled, and leave shutter/ISO/aperture in tether-compatible positions such as A or command control",
+                                )
+                            ),
+                            details={"camera_status": str(camera_diag.get("status"))},
+                        )
+                    )
 
         # Zoom-lens gate: refuse calibration/centering until focal length is trusted
         profile = self.active_equipment_profile
@@ -649,6 +731,28 @@ class ClawController:
             )
             result = self.camera.capture(request)
         except Exception as exc:
+            blocker = self._camera_operator_blocker(exc)
+            if blocker is not None:
+                self.session.pause(
+                    pause_reason=blocker.name,
+                    resume_state=ClawState.CAPTURE,
+                    workflow_intent=WorkflowIntent.CAPTURE,
+                    operator_action_required=blocker.operator_action_required,
+                )
+                self._emit_event(
+                    EventType.OPERATOR_ACTION_REQUIRED,
+                    f"capture blocked: {blocker.name}",
+                    EventSeverity.ERROR,
+                    details={"blockers": [blocker.name], "error": str(exc)},
+                )
+                result_transition = self._make_transition(
+                    prev,
+                    ClawState.PAUSED,
+                    f"capture blocked: {blocker.name}",
+                )
+                result_transition.blockers = [blocker]
+                return result_transition
+
             # Single bounded write retry per spec lines 1130-1133.
             # Re-probe storage: if still writable and trusted, retry once on the
             # same canonical path.  Disk-full, permission, or unavailable storage
@@ -1021,6 +1125,21 @@ class ClawController:
             self.session.last_frame_path = str(capture_result.image_path)
             self.session.solve_attempts = 0  # reset for fresh frame
         except Exception as exc:
+            blocker = self._camera_operator_blocker(exc)
+            if blocker is not None:
+                self.session.pause(
+                    pause_reason=blocker.name,
+                    resume_state=ClawState.TEST_CAPTURE,
+                    workflow_intent=self.session.workflow_intent or WorkflowIntent.CALIBRATION,
+                    operator_action_required=blocker.operator_action_required,
+                )
+                result = self._make_transition(
+                    prev,
+                    ClawState.PAUSED,
+                    f"test capture blocked: {blocker.name}",
+                )
+                result.blockers = [blocker]
+                return result
             self.session.enter_recover()
             return self._make_transition(
                 prev,

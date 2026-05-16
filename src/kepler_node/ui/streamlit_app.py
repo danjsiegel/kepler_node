@@ -82,6 +82,56 @@ def _vocab_label(state: str) -> str:
     return _STATE_VOCAB.get(state, state.capitalize())
 
 
+def _device_status_display(device_info: dict[str, Any]) -> str:
+    status = device_info.get("status")
+    if status == "remote_control_ready":
+        return "✅ Remote Ready"
+    if device_info.get("connected"):
+        return "✅ Connected"
+
+    if status == "autocapture_mode":
+        return "⚠ Auto Capture Mode"
+    if status == "card_reader_mode":
+        return "⚠ Card Reader Mode"
+    if status == "detected_unknown_mode":
+        return "⚠ USB Mode Unsupported"
+    if status == "not_initialized":
+        return "⏳ Not initialized"
+    if status == "pending_connect":
+        return "🟡 Pending connect"
+    return "❌ Not connected"
+
+
+def _camera_readiness_display(camera_info: dict[str, Any]) -> str:
+    status = camera_info.get("status")
+    if status == "remote_control_ready" or camera_info.get("ready"):
+        return "✅ Ready"
+    if status in {"autocapture_mode", "card_reader_mode", "detected_unknown_mode"}:
+        return "❌ Not Ready"
+    if status == "not_initialized":
+        return "⏳ Not initialized"
+    if status == "pending_connect":
+        return "🟡 Pending connect"
+    return "❌ Not connected"
+
+
+def _camera_mode_display(camera_info: dict[str, Any]) -> str:
+    status = camera_info.get("status")
+    if status == "remote_control_ready":
+        return "Remote Control"
+    if status == "autocapture_mode":
+        return "Auto Capture"
+    if status == "card_reader_mode":
+        return "SD Card Mode"
+    if status == "detected_unknown_mode":
+        return "Unknown USB Mode"
+    if status == "not_initialized":
+        return "Not initialized"
+    if status == "pending_connect":
+        return "Pending connect"
+    return "Disconnected"
+
+
 def _show_blockers(blockers: list[dict[str, Any]]) -> None:
     for b in blockers:
         st.error(f"⛔ **{b['name']}**: {b['summary']}")
@@ -232,17 +282,19 @@ with overview_tab:
         camera_info = devices.get("camera", {})
         col_m, col_c = st.columns(2)
         with col_m:
-            mount_icon = "✅" if mount_info.get("connected") else "❌"
             st.metric(
                 "Mount",
-                f"{mount_icon} {'Connected' if mount_info.get('connected') else 'Not connected'}",
+                _device_status_display(mount_info),
             )
         with col_c:
-            camera_icon = "✅" if camera_info.get("connected") else "❌"
             st.metric(
                 "Camera",
-                f"{camera_icon} {'Connected' if camera_info.get('connected') else 'Not connected'}",
+                _device_status_display(camera_info),
             )
+            st.metric("Camera Readiness", _camera_readiness_display(camera_info))
+            st.metric("Camera Mode", _camera_mode_display(camera_info))
+            if camera_info.get("summary"):
+                st.caption(camera_info["summary"])
 
     st.divider()
 

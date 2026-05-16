@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -110,14 +111,17 @@ class FakeMountBackend:
 
 
 class FakeCameraBackend:
-    def __init__(self) -> None:
-        pass
+    def __init__(self, diagnostic_status: dict | None = None) -> None:
+        self._diagnostic_status = diagnostic_status
 
     def connect(self, settings: CameraSettings) -> None:
         pass
 
     def disconnect(self) -> None:
         pass
+
+    def diagnostic_status(self) -> dict | None:
+        return self._diagnostic_status
 
     def capture(self, request: CaptureRequest) -> CaptureResult:
         return CaptureResult(image_path=Path("/tmp/test.jpg"), metadata={})
@@ -140,6 +144,7 @@ def _make_controller(
     *,
     session: RuntimeSession | None = None,
     node: FakeNodeBackend | None = None,
+    camera: FakeCameraBackend | None = None,
     tmp_path: Path,
 ) -> ClawController:
     base = tmp_path
@@ -150,7 +155,7 @@ def _make_controller(
         session=session or RuntimeSession(),
         node_backend=node or FakeNodeBackend(),
         mount_backend=FakeMountBackend(),
-        camera_backend=FakeCameraBackend(),
+        camera_backend=camera or FakeCameraBackend(),
         solver_backend=FakeSolverBackend(),
         store=FilesystemSessionStore(data_root=base),
         authorship_tracker=AuthorshipTracker(),
@@ -233,6 +238,8 @@ def test_node_status_detected_devices_connected_after_ready(tmp_path: Path) -> N
     devices = resp.json()["detected_devices"]
     assert devices["mount"]["connected"] is True
     assert devices["camera"]["connected"] is True
+    assert devices["mount"]["status"] == "connected"
+    assert devices["camera"]["status"] == "connected"
 
 
 def test_node_status_detected_devices_not_connected_before_connect(tmp_path: Path) -> None:
@@ -244,6 +251,29 @@ def test_node_status_detected_devices_not_connected_before_connect(tmp_path: Pat
     devices = resp.json()["detected_devices"]
     assert devices["mount"]["connected"] is False
     assert devices["camera"]["connected"] is False
+    assert devices["mount"]["status"] == "not_initialized"
+    assert devices["camera"]["status"] == "not_initialized"
+
+
+def test_node_status_detected_devices_pending_connect_when_profile_selected(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path=tmp_path)
+    ctrl.session.state = ClawState.CONNECT
+    ctrl.active_equipment_profile = SimpleNamespace(
+        profile_id="starter-rig",
+        display_name="Starter Rig",
+        hardware=SimpleNamespace(
+            lens=SimpleNamespace(is_zoom=False, default_focal_length_mm=135),
+        ),
+        solving_hints=SimpleNamespace(focal_length_assumption_mm=None),
+    )
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.get("/api/v1/node/status")
+    assert resp.status_code == 200
+    devices = resp.json()["detected_devices"]
+    assert devices["mount"]["connected"] is False
+    assert devices["camera"]["connected"] is False
+    assert devices["mount"]["status"] == "pending_connect"
+    assert devices["camera"]["status"] == "pending_connect"
 
 
 # ------------------------------------------------------------------ #
@@ -296,6 +326,65 @@ def test_readiness_blocked_when_power_unhealthy(tmp_path: Path) -> None:
     assert data["ready"] is False
     names = [b["name"] for b in data["blockers"]]
     assert "power_integrity_warning" in names
+
+
+def test_readiness_blocked_when_camera_in_card_reader_mode(tmp_path: Path) -> None:
+    ctrl = _make_controller(
+        camera=FakeCameraBackend(
+            diagnostic_status={
+                "status": "card_reader_mode",
+                "connected": True,
+                "ready": False,
+                "summary": "Camera is detected but only exposing status/card-reader controls",
+            }
+        ),
+        tmp_path=tmp_path,
+    )
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.get("/api/v1/readiness")
+    data = resp.json()
+    assert data["ready"] is False
+    names = [b["name"] for b in data["blockers"]]
+    assert "camera_remote_mode_required" in names
+
+
+def test_readiness_blocked_when_camera_in_autocapture_mode(tmp_path: Path) -> None:
+    ctrl = _make_controller(
+        camera=FakeCameraBackend(
+            diagnostic_status={
+                "status": "autocapture_mode",
+                "connected": True,
+                "ready": False,
+                "summary": "Camera is in Still Capture Mode 'Self-timer'; exit self-timer/autocapture mode on the body before capture",
+            }
+        ),
+        tmp_path=tmp_path,
+    )
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.get("/api/v1/readiness")
+    data = resp.json()
+    assert data["ready"] is False
+    names = [b["name"] for b in data["blockers"]]
+    assert "camera_autocapture_mode_blocking" in names
+
+
+def test_node_status_surfaces_card_reader_mode(tmp_path: Path) -> None:
+    ctrl = _make_controller(
+        camera=FakeCameraBackend(
+            diagnostic_status={
+                "status": "card_reader_mode",
+                "connected": True,
+                "ready": False,
+                "summary": "Camera is detected but only exposing status/card-reader controls",
+            }
+        ),
+        tmp_path=tmp_path,
+    )
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.get("/api/v1/node/status")
+    data = resp.json()
+    assert data["detected_devices"]["camera"]["status"] == "card_reader_mode"
+    assert "card-reader controls" in data["detected_devices"]["camera"]["summary"]
 
 
 def test_readiness_includes_storage_summary(tmp_path: Path) -> None:

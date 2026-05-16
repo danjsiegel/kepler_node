@@ -113,6 +113,16 @@ def test_upgrade_sh_reads_release_metadata() -> None:
     )
 
 
+def test_upgrade_sh_defines_indi_port_for_service_template() -> None:
+    content = (_REPO_ROOT / "upgrade.sh").read_text()
+    assert 'INDI_PORT=7624' in content, (
+        "upgrade.sh must define INDI_PORT before rendering the indiserver service template"
+    )
+    assert 'indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}' in content, (
+        "upgrade.sh must render the indiserver unit with the configured INDI port"
+    )
+
+
 def test_upgrade_sh_preflight_checks_os_and_architecture() -> None:
     content = (_REPO_ROOT / "upgrade.sh").read_text()
     assert "uname -s" in content or "required_os" in content, (
@@ -174,6 +184,57 @@ def test_scripts_do_not_install_dev_dependencies() -> None:
         )
 
 
+def test_bootstrap_sh_installs_gphoto2_for_direct_camera_backend() -> None:
+    content = (_REPO_ROOT / "bootstrap.sh").read_text()
+    assert "gphoto2" in content, (
+        "bootstrap.sh must install gphoto2 because the supported direct camera backend depends on it"
+    )
+
+
+def test_bootstrap_sh_installs_full_supported_runtime_once() -> None:
+    content = (_REPO_ROOT / "bootstrap.sh").read_text()
+    for package_name in ("kstars", "xrdp", "tigervnc-standalone-server"):
+        assert package_name in content, (
+            f"bootstrap.sh must install {package_name} as part of the full supported package set"
+        )
+    assert 'if [[ "${PROFILE}" == "field-fallback" ]]' not in content[content.find("COMMON_PACKAGES="):content.find("ok \"System prerequisites installed\"")], (
+        "bootstrap.sh should not split the apt install footprint by profile"
+    )
+
+
+def test_bootstrap_sh_falls_back_when_indi_full_is_unavailable() -> None:
+    content = (_REPO_ROOT / "bootstrap.sh").read_text()
+    assert "apt_package_available indi-full" in content, (
+        "bootstrap.sh should detect whether indi-full exists instead of assuming the meta-package is present"
+    )
+    assert "COMMON_PACKAGES+=(indi-bin)" in content, (
+        "bootstrap.sh must fall back to indi-bin when indi-full is unavailable"
+    )
+    assert "indi-gphoto" in content and "indi-gpsd" in content, (
+        "bootstrap.sh should install available INDIGO/INDI support packages needed for the supported node posture"
+    )
+
+
+def test_bootstrap_sh_field_profile_does_not_require_ekos_package_name() -> None:
+    content = (_REPO_ROOT / "bootstrap.sh").read_text()
+    assert "ekos" not in content, (
+        "bootstrap.sh should not require a separate ekos apt package when the distro ships KStars without that split"
+    )
+
+
+def test_bootstrap_sh_makes_uv_available_after_installer_runs() -> None:
+    content = (_REPO_ROOT / "bootstrap.sh").read_text()
+    assert "ensure_uv_installed()" in content, (
+        "bootstrap.sh should centralize uv installation and path repair in a helper"
+    )
+    assert "ln -sf" in content and "/usr/local/bin/uv" in content, (
+        "bootstrap.sh must make the discovered uv binary reachable from a stable system path"
+    )
+    assert 'command -v uv >/dev/null 2>&1 || fail "uv installation succeeded but the uv binary is not on PATH"' in content, (
+        "bootstrap.sh must fail clearly if uv still is not resolvable after installation"
+    )
+
+
 def test_bootstrap_sh_field_fallback_creates_indiserver_service() -> None:
     content = (_REPO_ROOT / "bootstrap.sh").read_text()
     indiserver_write_pos = content.find("indiserver.service")
@@ -182,6 +243,50 @@ def test_bootstrap_sh_field_fallback_creates_indiserver_service() -> None:
     assert 'elif [[ "${PROFILE}" == "headless-node"' not in indi_section, (
         "bootstrap.sh must provision indiserver.service for all profiles, "
         "not only headless-node (field-fallback is a superset per spec line 1661)"
+    )
+
+
+def test_bootstrap_and_upgrade_use_fifo_mode_for_generic_indiserver() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "RuntimeDirectory=kepler-indiserver" in content, (
+            f"{script_name} must provision a runtime directory for the INDI control FIFO"
+        )
+        assert "ExecStartPre=/usr/bin/mkfifo /run/kepler-indiserver/control.fifo" in content, (
+            f"{script_name} must create the INDI control FIFO before startup"
+        )
+        assert "ExecStart=/usr/bin/indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}" in content, (
+            f"{script_name} must run indiserver in FIFO mode so the generic service stays up without hardcoded drivers"
+        )
+
+
+def test_bootstrap_and_upgrade_disable_gvfs_camera_auto_claimer() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "gvfs-gphoto2-volume-monitor.service" in content, (
+            f"{script_name} must disable the GVFS gphoto monitor so desktop sessions do not steal USB cameras"
+        )
+        assert "systemctl --global mask" in content, (
+            f"{script_name} must globally mask the GVFS gphoto monitor for future desktop sessions"
+        )
+        assert "systemctl --user mask --now" in content, (
+            f"{script_name} must stop and mask the GVFS gphoto monitor in active user sessions"
+        )
+        assert "pkill -x gvfsd-gphoto2" in content, (
+            f"{script_name} must kill an already-running gvfsd-gphoto2 process so the camera is immediately releasable"
+        )
+
+
+def test_upgrade_sh_refreshes_managed_service_units() -> None:
+    content = (_REPO_ROOT / "upgrade.sh").read_text()
+    assert "Step 3b: Refreshing managed service units" in content, (
+        "upgrade.sh should refresh managed service units before restart so legacy broken units are repaired"
+    )
+    assert 'write_indiserver_service "/etc/systemd/system/indiserver.service"' in content, (
+        "upgrade.sh must rewrite the canonical indiserver.service during upgrades"
+    )
+    assert "Step 3c: Preventing desktop camera auto-claimers" in content, (
+        "upgrade.sh should disable GVFS camera auto-claimers before restarting services"
     )
 
 
@@ -209,6 +314,16 @@ def test_bootstrap_sh_health_check_verifies_indiserver_service_active() -> None:
     assert "systemctl is-active --quiet indiserver" in content, (
         "bootstrap.sh health checks must verify indiserver service is active, "
         "not only that the binary exists"
+    )
+
+
+def test_bootstrap_sh_refuses_rerun_when_install_manifest_exists() -> None:
+    content = (_REPO_ROOT / "bootstrap.sh").read_text()
+    assert "Existing install manifest found" in content, (
+        "bootstrap.sh should fail fast when an install manifest already exists"
+    )
+    assert "Use upgrade.sh for updates" in content, (
+        "bootstrap.sh should direct existing installs to upgrade.sh instead of rebootstrap"
     )
 
 
@@ -272,6 +387,14 @@ def test_upgrade_sh_astrometry_index_check_fails_closed() -> None:
     )
 
 
+def test_bootstrap_and_upgrade_health_checks_verify_gphoto2() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "command -v gphoto2" in content, (
+            f"{script_name} must verify the gphoto2 binary because the direct camera backend depends on it"
+        )
+
+
 def test_release_json_managed_services_includes_kepler_ui() -> None:
     import json
 
@@ -316,4 +439,31 @@ def test_upgrade_sh_reads_target_ref_release_metadata_for_release_flag() -> None
     assert fetch_pos < stop_pos, (
         "upgrade.sh must fetch the target ref before reading its release metadata "
         "and before stopping services"
+    )
+
+
+def test_deploy_pi_sh_uses_live_systemd_working_directory() -> None:
+    content = (_REPO_ROOT / "scripts" / "deploy_pi.sh").read_text()
+    assert "systemctl show kepler-node --property=WorkingDirectory --value" in content, (
+        "deploy_pi.sh must discover the live install path from the kepler-node systemd unit"
+    )
+    assert "sudo -n true" in content, (
+        "deploy_pi.sh must fail fast when passwordless sudo is unavailable"
+    )
+    assert '"${INSTALL_ROOT}/upgrade.sh"' in content, (
+        "deploy_pi.sh must run the installed upgrade.sh from the live repo path"
+    )
+    assert '"${INSTALL_ROOT}/scripts/pi_smoke.py"' in content, (
+        "deploy_pi.sh must run the installed pi_smoke.py after upgrade"
+    )
+
+
+def test_deploy_pi_workflow_targets_self_hosted_pi_runner() -> None:
+    content = (_REPO_ROOT / ".github" / "workflows" / "deploy-pi.yml").read_text()
+    assert "workflow_dispatch" in content, "deploy-pi.yml must be manually triggerable"
+    assert "self-hosted" in content and "kepler-pi" in content, (
+        "deploy-pi.yml must target the self-hosted Pi runner labels"
+    )
+    assert "scripts/deploy_pi.sh" in content, (
+        "deploy-pi.yml must invoke the Pi-local deploy helper"
     )

@@ -1,0 +1,46 @@
+name: Pi Hardware Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      require_kepler_stack:
+        description: Require the Kepler services and local API to be active
+        type: boolean
+        default: false
+      require_gps_fix:
+        description: Require a live GPS TPV fix with time
+        type: boolean
+        default: false
+      require_rtc_sync:
+        description: Require RTCSynchronized=yes from timedatectl
+        type: boolean
+        default: false
+      expect_profile:
+        description: Expected bootstrap profile when checking the Kepler stack
+        type: choice
+        required: false
+        default: headless-node
+        options:
+          - headless-node
+          - field-fallback
+
+jobs:
+  smoke:
+    runs-on:
+      - self-hosted
+      - Linux
+      - ARM64
+      - kepler-pi
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run Pi smoke checks
+        run: |
+          python3 scripts/pi_smoke.py \
+            ${{ inputs.require_kepler_stack && '--require-kepler-stack' || '' }} \
+            ${{ inputs.require_gps_fix && '--require-gps-fix' || '' }} \
+            ${{ inputs.require_rtc_sync && '--require-rtc-sync' || '' }} \
+            ${{ inputs.require_kepler_stack && format('--expect-profile {0}', inputs.expect_profile) || '' }}

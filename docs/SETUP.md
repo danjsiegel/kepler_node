@@ -44,6 +44,8 @@ Kepler Node is intended to support two operator modes.
 | `headless-node` | INDI + Kepler on Pi; KStars/Ekos on a remote client over the local network |
 | `field-fallback` | Same as headless-node, plus on-node KStars/Ekos accessible via xRDP (port 3389) |
 
+The supported install posture is one provisioned node image with the full supported package set present. The selected profile controls the runtime posture, connection details, and profile-specific health expectations rather than choosing between two different package-install footprints.
+
 ### Bootstrap Command
 
 ```bash
@@ -58,13 +60,14 @@ sudo ./bootstrap.sh --profile headless-node --data-dir /data/kepler
 ```
 
 Bootstrap steps:
-1. Installs system prerequisites (`indi-full`, `astrometry.net`, `gpsd`, etc.)
+1. Installs the full supported system package set (`astrometry.net`, `gpsd`, `gphoto2`, INDI server packages, KStars, xRDP, etc.)
 2. Installs `uv` and syncs Python dependencies
 3. Creates data directory structure
 4. Writes an install manifest to `$DATA_DIR/install_manifest.json`
-5. Installs and starts the `kepler-node` systemd service
-6. Configures INDI server service (`headless-node`) or xRDP/KStars (`field-fallback`)
-7. Runs post-install health checks and prints a connection summary
+5. Disables the GVFS gphoto desktop monitor so GUI sessions do not auto-claim USB PTP cameras away from Kepler
+6. Installs and starts the `kepler-node` systemd service
+7. Configures INDI server service and the supported remote-planner services
+8. Runs post-install health checks and prints a connection summary
 
 Post-install summary shows the Kepler API URL, planner connection details (INDI port or xRDP port 3389), and any health-check warnings.
 
@@ -81,9 +84,65 @@ Upgrade steps:
 1. Reads the existing install manifest (fails if none — run bootstrap first)
 2. Stops managed services in dependency order (`kepler-ui` → `kepler-node` → `indiserver`), then pulls latest code (or checks out the specified release)
 3. Syncs Python dependencies
-4. Updates the install manifest with new version and upgrade timestamp (`in-progress`)
-5. Restarts managed services in dependency order (`indiserver` → `kepler-node` → `kepler-ui` if present)
-6. Runs post-upgrade health checks; on success, persists `success` outcome; on failure, persists `health-checks-failed` and exits 1
+4. Refreshes managed service units and disables the GVFS gphoto desktop monitor so active GUI sessions release attached cameras
+5. Updates the install manifest with new version and upgrade timestamp (`in-progress`)
+6. Restarts managed services in dependency order (`indiserver` → `kepler-node` → `kepler-ui` if present)
+7. Runs post-upgrade health checks; on success, persists `success` outcome; on failure, persists `health-checks-failed` and exits 1
+
+If a Fuji or other USB PTP camera appears in `lsusb` but Kepler still reports it disconnected, the usual cause is a desktop-session auto-mounter such as `gvfsd-gphoto2` claiming the device. The supported bootstrap and upgrade flow now masks that monitor so Kepler can claim the camera through `gphoto2`.
+
+## Deployment Workflow
+
+The supported deployment model is pull-on-node, not push-from-hosted-CI.
+
+Why this is the supported posture:
+
+- the live Kepler services run from the repo path captured in the `kepler-node` systemd unit `WorkingDirectory`
+- a random GitHub Actions checkout is not the live install path
+- the Pi may only be reachable on the tailnet or local network, so hosted runners are the wrong place to own deploy authority
+
+Supported deployment paths:
+
+1. First install: run `bootstrap.sh` manually on the Pi.
+2. Routine updates: run `upgrade.sh` on the Pi or invoke it remotely over SSH against the live install path.
+3. Automated updates on the Pi: use a self-hosted GitHub Actions runner on the node and run the manual deploy workflow in [.github/workflows/deploy-pi.yml](../.github/workflows/deploy-pi.yml).
+
+`bootstrap.sh` is a first-install entry point only. If an install manifest already exists, treat the node as an upgrade case and use `upgrade.sh` instead.
+
+The deploy helper in [scripts/deploy_pi.sh](../scripts/deploy_pi.sh) is intentionally Pi-local:
+
+- it discovers the live repo path from `systemctl show kepler-node --property=WorkingDirectory --value`
+- it runs `upgrade.sh` from that live install path
+- it then runs [scripts/pi_smoke.py](../scripts/pi_smoke.py) as a post-deploy smoke check against the restarted services
+
+Automated Pi deploys require passwordless `sudo` for the runner user. Without that, keep deploys manual over SSH and run `sudo ./upgrade.sh` yourself.
+
+### Hardware Smoke Checks
+
+Before bootstrap, or while validating clocks, GPS, and power on a bare Pi, run the smoke checker directly:
+
+```bash
+ssh <node> 'python3 - --require-gps-fix' < scripts/pi_smoke.py
+```
+
+After bootstrap, require the full Kepler stack as well:
+
+```bash
+ssh <node> 'python3 - --require-kepler-stack --expect-profile headless-node --require-gps-fix' < scripts/pi_smoke.py
+```
+
+To validate that a USB camera is not just visible on the bus but is actually in the remote-control mode Kepler requires, add the camera flag as well:
+
+```bash
+ssh <node> 'python3 - --require-kepler-stack --expect-profile headless-node --require-gps-fix --require-camera-remote-mode' < scripts/pi_smoke.py
+```
+
+If that check fails while `lsusb` still shows the camera, the usual causes are:
+
+- the desktop GVFS gphoto monitor is still claiming the device
+- the camera body is in storage/PTP mode instead of USB remote-control / tethered-shooting mode
+
+The manual GitHub Actions hardware-smoke workflow in [.github/workflows/pi-hardware-smoke.yml](../.github/workflows/pi-hardware-smoke.yml) runs the same checks on a self-hosted Pi runner.
 
 ## Current Readiness Posture
 

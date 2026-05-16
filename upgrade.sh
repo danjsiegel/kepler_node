@@ -21,6 +21,7 @@ SKIP_RESTART=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEPLER_PORT=8000
 UI_PORT=8501
+INDI_PORT=7624
 
 # ------------------------------------------------------------------ #
 # Helpers                                                              #
@@ -30,6 +31,53 @@ log()  { echo "  [upgrade] $*"; }
 ok()   { echo "  ✅ $*"; }
 fail() { echo "  ❌ $*" >&2; exit 1; }
 warn() { echo "  ⚠️  $*"; }
+
+write_indiserver_service() {
+    local service_path="$1"
+    cat > "${service_path}" <<INDI
+[Unit]
+Description=INDI Server
+After=network.target
+
+[Service]
+Type=simple
+RuntimeDirectory=kepler-indiserver
+RuntimeDirectoryMode=0755
+ExecStartPre=/usr/bin/rm -f /run/kepler-indiserver/control.fifo
+ExecStartPre=/usr/bin/mkfifo /run/kepler-indiserver/control.fifo
+ExecStart=/usr/bin/indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}
+ExecStopPost=/usr/bin/rm -f /run/kepler-indiserver/control.fifo
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+INDI
+}
+
+disable_desktop_camera_claimers() {
+    local user_unit="gvfs-gphoto2-volume-monitor.service"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --global mask "${user_unit}" >/dev/null 2>&1 \
+            || warn "Could not globally mask ${user_unit}; desktop sessions may still claim USB cameras"
+    fi
+
+    if command -v runuser >/dev/null 2>&1; then
+        for runtime_dir in /run/user/*; do
+            [[ -d "${runtime_dir}" ]] || continue
+            uid="$(basename "${runtime_dir}")"
+            user_name="$(id -nu "${uid}" 2>/dev/null || true)"
+            [[ -n "${user_name}" && -S "${runtime_dir}/bus" ]] || continue
+            runuser -u "${user_name}" -- env \
+                XDG_RUNTIME_DIR="${runtime_dir}" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+                systemctl --user mask --now "${user_unit}" >/dev/null 2>&1 || true
+        done
+    fi
+
+    pkill -x gvfsd-gphoto2 >/dev/null 2>&1 || true
+    pkill -f '/usr/libexec/gvfs-gphoto2-volume-monitor' >/dev/null 2>&1 || true
+}
 
 usage() {
     cat <<EOF
@@ -244,6 +292,21 @@ uv sync --extra local-api --extra ui \
 ok "Dependencies synced"
 
 # ------------------------------------------------------------------ #
+# Step 3b — Refresh managed service units                             #
+# ------------------------------------------------------------------ #
+
+log "Step 3b: Refreshing managed service units..."
+
+write_indiserver_service "/etc/systemd/system/indiserver.service"
+systemctl daemon-reload
+
+ok "Managed service units refreshed"
+
+log "Step 3c: Preventing desktop camera auto-claimers..."
+disable_desktop_camera_claimers
+ok "Desktop camera auto-claimers disabled"
+
+# ------------------------------------------------------------------ #
 # Step 4 — Update install manifest (in-progress)                      #
 # ------------------------------------------------------------------ #
 
@@ -362,6 +425,13 @@ if command -v solve-field &>/dev/null; then
 else
     warn "solve-field not found — astrometry plate solving will not work"
     HEALTH_FAIL=true
+fi
+
+if command -v gphoto2 &>/dev/null; then
+	ok "gphoto2 found at $(command -v gphoto2)"
+else
+	warn "gphoto2 not found — direct camera control will not work"
+	HEALTH_FAIL=true
 fi
 
 if ls /usr/share/astrometry/*.fits &>/dev/null 2>&1; then

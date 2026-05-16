@@ -77,18 +77,45 @@ def _to_blocker(c: ReadinessCondition) -> BlockerCondition:
 _PRE_CONNECT_STATES = {ClawState.BOOT, ClawState.DISCOVER, ClawState.CONNECT}
 
 
-def _get_detected_devices(controller: ClawController) -> dict[str, dict[str, bool]]:
-    """Derive mount/camera connection summary from session state.
+def _get_detected_devices(controller: ClawController) -> dict[str, dict[str, bool | str]]:
+    """Derive mount/camera summary from session state and profile readiness.
 
-    The v1 camera and mount protocols do not expose device identity, so
-    connection state is inferred from ``ClawState``: once the node advances
-    past CONNECT both adapters were successfully connected.
+    The v1 camera and mount protocols do not expose device identity, so the
+    API distinguishes between three coarse operator-facing states:
+
+    - ``not_initialized``: no active equipment profile has been selected yet
+    - ``pending_connect``: a profile exists, but the controller has not yet
+      advanced past the connect stage
+    - ``connected``: the controller progressed past CONNECT
     """
     connected = controller.session.state not in _PRE_CONNECT_STATES
+    if connected:
+        status = "connected"
+    elif controller.active_equipment_profile is None:
+        status = "not_initialized"
+    else:
+        status = "pending_connect"
+
     return {
-        "mount": {"connected": connected},
-        "camera": {"connected": connected},
+        "mount": {"connected": connected, "status": status},
+        "camera": {"connected": connected, "status": status},
     }
+
+
+def _get_camera_diagnostic(controller: ClawController) -> dict[str, Any] | None:
+    diagnostic_status = getattr(controller.camera, "diagnostic_status", None)
+    if not callable(diagnostic_status):
+        return None
+    try:
+        diagnostic = diagnostic_status()
+    except Exception as exc:
+        return {
+            "status": "diagnostic_failed",
+            "connected": False,
+            "ready": False,
+            "summary": f"Camera diagnostic probe failed: {exc}",
+        }
+    return diagnostic if diagnostic is not None else None
 
 
 def _node_host() -> str:
@@ -142,6 +169,16 @@ def _get_degraded(
                 name="time_source_weaker",
                 severity="degraded",
                 summary=f"Time source is {_TIME_SOURCE_LABEL.get(time_st.source, time_st.source.value)}; NTP or GPS preferred",
+            )
+        )
+
+    camera_diag = _get_camera_diagnostic(controller)
+    if camera_diag is not None and camera_diag.get("status") == "disconnected":
+        degraded.append(
+            BlockerCondition(
+                name="camera_disconnected",
+                severity="degraded",
+                summary=camera_diag.get("summary", "No USB camera detected"),
             )
         )
     return degraded
@@ -336,6 +373,17 @@ def build_app(*, controller: ClawController) -> FastAPI:
         if manifest is not None:
             build_summary = f"kepler-node {manifest.kepler_version}"
 
+        detected_devices = _get_detected_devices(controller)
+        camera_diag = _get_camera_diagnostic(controller)
+        if camera_diag is not None:
+            detected_devices["camera"] = {
+                **detected_devices["camera"],
+                "status": camera_diag.get("status", detected_devices["camera"]["status"]),
+                "summary": camera_diag.get("summary"),
+                "usb_connected": bool(camera_diag.get("connected")),
+                "ready": bool(camera_diag.get("ready")),
+            }
+
         return NodeStatusResponse(
             state=controller.session.state,
             workflow_intent=(
@@ -355,7 +403,7 @@ def build_app(*, controller: ClawController) -> FastAPI:
                 "undervoltage_detected": power_status.undervoltage_detected,
                 "summary": power_status.summary,
             },
-            detected_devices=_get_detected_devices(controller),
+            detected_devices=detected_devices,
             build_summary=build_summary,
             active_equipment_profile=profile_summary,
             planner_mode=planner_mode,

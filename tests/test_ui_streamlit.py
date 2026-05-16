@@ -40,8 +40,8 @@ def _make_mock_client() -> MagicMock:
         "state": "ready",
         "control_locked": False,
         "detected_devices": {
-            "mount": {"connected": False},
-            "camera": {"connected": False},
+            "mount": {"connected": False, "status": "not_initialized"},
+            "camera": {"connected": False, "status": "not_initialized"},
         },
         "storage_status": {},
         "power_status": {},
@@ -157,9 +157,117 @@ def test_overview_renders_node_status_metrics() -> None:
 
     assert not at.exception
     metric_labels = [m.label for m in at.metric]
+    metric_values = [str(m.value) for m in at.metric]
     assert any("Status" in lbl or "State" in lbl or "Health" in lbl for lbl in metric_labels), (
         f"Expected status/health metric in Overview; found labels: {metric_labels}"
     )
+    assert any("Not initialized" in value for value in metric_values), metric_values
+
+
+def test_overview_surfaces_card_reader_mode_warning() -> None:
+    client = _make_mock_client()
+    client.get_readiness.return_value = {
+        "ready": False,
+        "blockers": [
+            {
+                "name": "camera_remote_mode_required",
+                "summary": "Camera is detected but only exposing status/card-reader controls",
+                "operator_action_required": "Switch camera to USB tether/remote-control mode and retry",
+            }
+        ],
+        "degraded": [],
+        "time_trusted": True,
+        "calibrated": False,
+        "external_control_summary": None,
+    }
+    client.get_node_status.return_value = {
+        **client.get_node_status.return_value,
+        "detected_devices": {
+            "mount": {"connected": False, "status": "not_initialized"},
+            "camera": {
+                "connected": False,
+                "status": "card_reader_mode",
+                "summary": "Camera is detected but only exposing status/card-reader controls",
+            },
+        },
+    }
+
+    at = _run_app_with_mock_client(client)
+
+    assert not at.exception
+    metric_values = [str(m.value) for m in at.metric]
+    metric_labels = [m.label for m in at.metric]
+    error_values = [e.value for e in at.error]
+    assert any("Card Reader Mode" in value for value in metric_values), metric_values
+    assert "Camera Readiness" in metric_labels, metric_labels
+    assert "Camera Mode" in metric_labels, metric_labels
+    assert any("Not Ready" in value for value in metric_values), metric_values
+    assert any("SD Card Mode" in value for value in metric_values), metric_values
+    assert any("card-reader controls" in value for value in error_values), error_values
+
+
+def test_overview_surfaces_remote_ready_camera_state() -> None:
+    client = _make_mock_client()
+    client.get_node_status.return_value = {
+        **client.get_node_status.return_value,
+        "detected_devices": {
+            "mount": {"connected": False, "status": "not_initialized"},
+            "camera": {
+                "connected": False,
+                "status": "remote_control_ready",
+                "summary": "Remote-control surface available via /main/actions/bulb",
+                "usb_connected": True,
+                "ready": True,
+            },
+        },
+    }
+
+    at = _run_app_with_mock_client(client)
+
+    assert not at.exception
+    metric_values = [str(m.value) for m in at.metric]
+    assert any("Remote Ready" in value for value in metric_values), metric_values
+    assert any("Ready" in value for value in metric_values), metric_values
+    assert any("Remote Control" in value for value in metric_values), metric_values
+
+
+def test_overview_surfaces_autocapture_mode_warning() -> None:
+    client = _make_mock_client()
+    client.get_readiness.return_value = {
+        "ready": False,
+        "blockers": [
+            {
+                "name": "camera_autocapture_mode_blocking",
+                "summary": "Camera is in Still Capture Mode 'Self-timer'; exit self-timer/autocapture mode on the body before capture",
+                "operator_action_required": "Exit self-timer/autocapture mode on the camera body and retry",
+            }
+        ],
+        "degraded": [],
+        "time_trusted": True,
+        "calibrated": False,
+        "external_control_summary": None,
+    }
+    client.get_node_status.return_value = {
+        **client.get_node_status.return_value,
+        "detected_devices": {
+            "mount": {"connected": False, "status": "not_initialized"},
+            "camera": {
+                "connected": False,
+                "status": "autocapture_mode",
+                "summary": "Camera is in Still Capture Mode 'Self-timer'; exit self-timer/autocapture mode on the body before capture",
+            },
+        },
+    }
+
+    at = _run_app_with_mock_client(client)
+
+    assert not at.exception
+    metric_values = [str(m.value) for m in at.metric]
+    error_values = [e.value for e in at.error]
+    assert any("Auto Capture Mode" in value for value in metric_values), metric_values
+    assert any("Not Ready" in value for value in metric_values), metric_values
+    assert any("Auto Capture" in value for value in metric_values), metric_values
+    assert any("Self-timer" in value for value in error_values), error_values
 
 
 def test_headless_mode_flow_renders_actionable_planner_guidance() -> None:

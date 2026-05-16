@@ -148,11 +148,13 @@ class FakeCameraBackend:
         fail_connect: bool = False,
         connect_error_msg: str = "camera connect failed",
         fail_capture: bool = False,
+        fail_capture_msg: str = "capture failed",
     ) -> None:
         self._capture_path = capture_path
         self._fail_connect = fail_connect
         self._connect_error_msg = connect_error_msg
         self._fail_capture = fail_capture
+        self._fail_capture_msg = fail_capture_msg
         self._events: list[DeviceActivityEvent] = []
         self.disconnected = False
 
@@ -168,7 +170,7 @@ class FakeCameraBackend:
 
     def capture(self, request: CaptureRequest) -> CaptureResult:
         if self._fail_capture:
-            raise RuntimeError("capture failed")
+            raise RuntimeError(self._fail_capture_msg)
         path = self._capture_path or (request.destination_dir / "test_frame.jpg")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
@@ -792,6 +794,32 @@ def test_capture_failure_enters_recover(tmp_path: Path) -> None:
     )
     result = ctrl.capture_one_frame(request=request)
     assert result.next_state == ClawState.RECOVER
+
+
+def test_capture_autocapture_mode_pauses_for_operator(tmp_path: Path) -> None:
+    ctrl = _make_controller(
+        camera=FakeCameraBackend(
+            fail_capture=True,
+            fail_capture_msg=(
+                "camera_autocapture_mode_blocking: Camera is in Still Capture Mode 'Self-timer'; "
+                "exit self-timer/autocapture mode on the body before capture"
+            ),
+        ),
+        tmp_path=tmp_path,
+    )
+    ctrl.session.state = ClawState.CAPTURE
+    ctrl.session.control_locked = True
+    request = CaptureRequest(
+        exposure_seconds=60.0,
+        settings=CameraSettings(iso=800),
+        destination_dir=tmp_path / "frames",
+    )
+
+    result = ctrl.capture_one_frame(request=request)
+
+    assert result.next_state == ClawState.PAUSED
+    assert ctrl.session.state == ClawState.PAUSED
+    assert any(b.name == "camera_autocapture_mode_blocking" for b in result.blockers)
 
 
 def test_evaluate_guard_pass_continues_capture(tmp_path: Path) -> None:

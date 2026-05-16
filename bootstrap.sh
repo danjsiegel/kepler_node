@@ -36,6 +36,106 @@ ok()   { echo "  ✅ $*"; }
 fail() { echo "  ❌ $*" >&2; exit 1; }
 warn() { echo "  ⚠️  $*"; }
 
+apt_package_available() {
+    apt-cache show "$1" >/dev/null 2>&1
+}
+
+write_indiserver_service() {
+    local service_path="$1"
+    cat > "${service_path}" <<INDI
+[Unit]
+Description=INDI Server
+After=network.target
+
+[Service]
+# The generic INDI server stays up in FIFO mode without hardcoding a mount
+# driver into the base install. Add drivers dynamically via the FIFO or
+# override ExecStart later for a concrete rig.
+Type=simple
+RuntimeDirectory=kepler-indiserver
+RuntimeDirectoryMode=0755
+ExecStartPre=/usr/bin/rm -f /run/kepler-indiserver/control.fifo
+ExecStartPre=/usr/bin/mkfifo /run/kepler-indiserver/control.fifo
+ExecStart=/usr/bin/indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}
+ExecStopPost=/usr/bin/rm -f /run/kepler-indiserver/control.fifo
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+INDI
+}
+
+disable_desktop_camera_claimers() {
+    local user_unit="gvfs-gphoto2-volume-monitor.service"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --global mask "${user_unit}" >/dev/null 2>&1 \
+            || warn "Could not globally mask ${user_unit}; desktop sessions may still claim USB cameras"
+    fi
+
+    if command -v runuser >/dev/null 2>&1; then
+        for runtime_dir in /run/user/*; do
+            [[ -d "${runtime_dir}" ]] || continue
+            uid="$(basename "${runtime_dir}")"
+            user_name="$(id -nu "${uid}" 2>/dev/null || true)"
+            [[ -n "${user_name}" && -S "${runtime_dir}/bus" ]] || continue
+            runuser -u "${user_name}" -- env \
+                XDG_RUNTIME_DIR="${runtime_dir}" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+                systemctl --user mask --now "${user_unit}" >/dev/null 2>&1 || true
+        done
+    fi
+
+    pkill -x gvfsd-gphoto2 >/dev/null 2>&1 || true
+    pkill -f '/usr/libexec/gvfs-gphoto2-volume-monitor' >/dev/null 2>&1 || true
+}
+
+ensure_uv_installed() {
+    if command -v uv >/dev/null 2>&1; then
+        return 0
+    fi
+
+    curl -Lsf https://astral.sh/uv/install.sh | bash
+
+    local uv_candidates=(
+        "/usr/local/bin/uv"
+        "/root/.local/bin/uv"
+        "/root/.cargo/bin/uv"
+        "${HOME}/.local/bin/uv"
+        "${HOME}/.cargo/bin/uv"
+    )
+    local uvx_candidates=(
+        "/usr/local/bin/uvx"
+        "/root/.local/bin/uvx"
+        "/root/.cargo/bin/uvx"
+        "${HOME}/.local/bin/uvx"
+        "${HOME}/.cargo/bin/uvx"
+    )
+    local candidate=""
+    local uvx_candidate=""
+
+    for candidate in "${uv_candidates[@]}"; do
+        if [[ -x "${candidate}" ]]; then
+            if [[ "${candidate}" != "/usr/local/bin/uv" ]]; then
+                ln -sf "${candidate}" /usr/local/bin/uv
+            fi
+            export PATH="/usr/local/bin:${candidate%/uv}:${PATH}"
+            break
+        fi
+    done
+
+    for uvx_candidate in "${uvx_candidates[@]}"; do
+        if [[ -x "${uvx_candidate}" ]]; then
+            if [[ "${uvx_candidate}" != "/usr/local/bin/uvx" ]]; then
+                ln -sf "${uvx_candidate}" /usr/local/bin/uvx
+            fi
+            break
+        fi
+    done
+
+    command -v uv >/dev/null 2>&1 || fail "uv installation succeeded but the uv binary is not on PATH"
+}
+
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
         fail "Bootstrap must be run as root (or via sudo)."
@@ -87,6 +187,11 @@ done
 
 require_root
 
+MANIFEST_PATH="${DATA_DIR}/install_manifest.json"
+if [[ -f "${MANIFEST_PATH}" ]]; then
+    fail "Existing install manifest found at ${MANIFEST_PATH}. Use upgrade.sh for updates instead of rerunning bootstrap.sh."
+fi
+
 # ------------------------------------------------------------------ #
 # Step 1 — System prerequisites                                        #
 # ------------------------------------------------------------------ #
@@ -98,29 +203,32 @@ apt-get update -qq
 COMMON_PACKAGES=(
     python3-pip
     python3-venv
-    indi-full
     libindi-dev
     astrometry.net
     astrometry-data-tycho2
     gpsd
     gpsd-clients
+    gphoto2
+    kstars
+    xrdp
+    tigervnc-standalone-server
     curl
     git
 )
 
+if apt_package_available indi-full; then
+    COMMON_PACKAGES+=(indi-full)
+else
+    COMMON_PACKAGES+=(indi-bin)
+    for optional_indi_pkg in indi-gphoto indi-gpsd; do
+        if apt_package_available "${optional_indi_pkg}"; then
+            COMMON_PACKAGES+=("${optional_indi_pkg}")
+        fi
+    done
+fi
+
 apt-get install -y --no-install-recommends "${COMMON_PACKAGES[@]}" \
     || fail "System package installation failed"
-
-if [[ "${PROFILE}" == "field-fallback" ]]; then
-    FIELD_PACKAGES=(
-        kstars
-        ekos
-        xrdp
-        tigervnc-standalone-server
-    )
-    apt-get install -y --no-install-recommends "${FIELD_PACKAGES[@]}" \
-        || warn "Some field-fallback packages failed to install — xRDP/KStars may be incomplete"
-fi
 
 ok "System prerequisites installed"
 
@@ -130,10 +238,7 @@ ok "System prerequisites installed"
 
 log "Step 2: Installing uv and kepler-node Python dependencies..."
 
-if ! command -v uv &>/dev/null; then
-    curl -Lsf https://astral.sh/uv/install.sh | bash
-    export PATH="${HOME}/.cargo/bin:${PATH}"
-fi
+ensure_uv_installed
 
 cd "${SCRIPT_DIR}"
 
@@ -159,8 +264,6 @@ ok "Data directory ready at ${DATA_DIR}"
 # ------------------------------------------------------------------ #
 
 log "Step 4: Writing install manifest..."
-
-MANIFEST_PATH="${DATA_DIR}/install_manifest.json"
 NOW_ISO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 cat > "${MANIFEST_PATH}" <<MANIFEST
@@ -175,6 +278,10 @@ cat > "${MANIFEST_PATH}" <<MANIFEST
 MANIFEST
 
 ok "Install manifest written to ${MANIFEST_PATH}"
+
+log "Step 4b: Preventing desktop camera auto-claimers..."
+disable_desktop_camera_claimers
+ok "Desktop camera auto-claimers disabled"
 
 # ------------------------------------------------------------------ #
 # Step 5 — systemd service                                             #
@@ -247,20 +354,7 @@ ok "kepler-ui service installed and started"
 # Both profiles require a managed indiserver.service (spec line 1682).
 log "Step 6: Configuring INDI server service..."
 INDI_SERVICE="/etc/systemd/system/indiserver.service"
-cat > "${INDI_SERVICE}" <<INDI
-[Unit]
-Description=INDI Server
-After=network.target
-
-[Service]
-# Add your equipment driver names after indiserver (e.g. indi_pmc8 indi_gphoto2).
-# Run: sudo systemctl edit indiserver --force to override ExecStart with real drivers.
-ExecStart=/usr/bin/indiserver -p ${INDI_PORT}
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-INDI
+write_indiserver_service "${INDI_SERVICE}"
 systemctl daemon-reload
 systemctl enable indiserver || warn "INDI service setup failed"
 systemctl start indiserver || warn "INDI server did not start — check: journalctl -u indiserver"
@@ -333,6 +427,13 @@ if command -v solve-field &>/dev/null; then
 else
     warn "solve-field not found — astrometry plate solving will not work"
     HEALTH_FAIL=true
+fi
+
+if command -v gphoto2 &>/dev/null; then
+	ok "gphoto2 found at $(command -v gphoto2)"
+else
+	warn "gphoto2 not found — direct camera control will not work"
+	HEALTH_FAIL=true
 fi
 
 if ls /usr/share/astrometry/*.fits &>/dev/null 2>&1; then
