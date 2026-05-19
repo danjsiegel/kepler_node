@@ -12,11 +12,29 @@ in tests a ``ClawController`` with fake adapters is injected instead.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 import socket as _socket
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query
+
+_logger = logging.getLogger(__name__)
+
+# How often the lifespan background task pings the camera to prevent
+# auto-power-off.  Must be shorter than the Fuji body's ~5-minute idle timer.
+_KEEPALIVE_INTERVAL_SECONDS = 90
+
+# Poll interval for the Ekos frame-landing watcher.
+_WATCHER_POLL_INTERVAL_SECONDS = 2.0
+
+# Poll interval for the Ekos read-only observation loop (focus, temperature,
+# sequence status).  5 seconds provides timely event population without hammering
+# the DBus interface.
+_EKOS_OBSERVATION_INTERVAL_SECONDS = 5.0
 
 from kepler_node.agent.claw import ClawController
 from kepler_node.agent.interfaces import ReadinessCondition, TimeSource, TimeStatus
@@ -250,17 +268,103 @@ def _action_resp(
     )
 
 
-def build_app(*, controller: ClawController) -> FastAPI:
+async def _camera_keepalive_loop(controller: ClawController) -> None:
+    """Background coroutine: call camera_keepalive() every _KEEPALIVE_INTERVAL_SECONDS.
+
+    Runs for the lifetime of the FastAPI app.  Exceptions from keepalive are
+    logged but never propagate so the loop cannot bring down the server.
+    The interval sleep comes *first* so the node has time to finish startup
+    before the first probe fires.
+    """
+    while True:
+        await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+        try:
+            controller.camera_keepalive()
+        except Exception:
+            _logger.exception("camera keepalive loop raised unexpectedly")
+
+
+async def _ekos_observation_loop(controller: ClawController) -> None:
+    """Background coroutine: poll Ekos device state every _EKOS_OBSERVATION_INTERVAL_SECONDS.
+
+    Calls ``controller.poll_ekos_observation()`` to populate focus, temperature,
+    and sequence-status events in the Ekos adapter queue.  Those events are
+    drained by ``_check_conflicts()`` when the controller performs conflict
+    detection, completing the read-only observation seam.
+
+    Exceptions from individual polls are absorbed by the adapter; this loop
+    never propagates so it cannot bring down the server.  The interval sleep
+    comes first so the node has time to finish startup before the first probe.
+    """
+    while True:
+        await asyncio.sleep(_EKOS_OBSERVATION_INTERVAL_SECONDS)
+        try:
+            controller.poll_ekos_observation()
+        except Exception:
+            _logger.exception("ekos observation loop raised unexpectedly")
+
+
+async def _frame_watcher_loop(controller: ClawController, output_dir: Path) -> None:
+    """Background coroutine: watch *output_dir* for newly landed Ekos frames.
+
+    Consumes the ``FrameWatcher.watch()`` async generator.  Each landed frame
+    is forwarded to ``controller.observe_landed_frame()`` so the intervention
+    policy can react.  A single ``FrameQualitySession`` is created and reused
+    for the lifetime of the watcher to maintain rolling session quality state.
+    """
+    from kepler_node.imaging.frame_quality import FrameQualitySession
+    from kepler_node.imaging.watcher import FrameWatcher
+
+    quality_session = FrameQualitySession()
+    watcher = FrameWatcher(output_dir, session=quality_session, poll_interval_seconds=_WATCHER_POLL_INTERVAL_SECONDS)
+    _logger.info("frame watcher started on %s", output_dir)
+    try:
+        async for path, result in watcher.watch():
+            try:
+                controller.observe_landed_frame(path, result, quality_session)
+            except Exception:
+                _logger.exception("frame watcher: observe_landed_frame raised for %s", path.name)
+    except asyncio.CancelledError:
+        watcher.stop()
+        raise
+
+
+def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None) -> FastAPI:
     """Build and return a FastAPI application bound to *controller*.
 
     All routes close over the controller instance so no global state or
     request-scoped dependency injection is needed for the v1 single-node
     deployment model.
+
+    Args:
+        controller:      The ``ClawController`` instance to bind.
+        ekos_output_dir: Optional path to the Ekos output directory.  When
+                         provided, a background ``_frame_watcher_loop`` task is
+                         started during the lifespan to ingest newly landed frames.
     """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):  # noqa: ARG001
+        tasks = [
+            asyncio.create_task(_camera_keepalive_loop(controller)),
+            asyncio.create_task(_ekos_observation_loop(controller)),
+        ]
+        if ekos_output_dir is not None:
+            tasks.append(asyncio.create_task(_frame_watcher_loop(controller, ekos_output_dir)))
+        try:
+            yield
+        finally:
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
     app = FastAPI(
         title="Kepler Node API",
         version="1.0.0",
         description="Local control API for the Kepler autonomous imaging node.",
+        lifespan=lifespan,
     )
 
     # ------------------------------------------------------------------ #

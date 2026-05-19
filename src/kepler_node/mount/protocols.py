@@ -42,5 +42,14 @@ class MountBackend(Protocol):
     def sync_to(self, position: MountPosition) -> None:
         """Apply a sync correction to the mount model."""
 
+    def poll_activity(self) -> None:
+        """Poll the mount for current state and populate the activity event queue.
+
+        Call this before draining ``activity_events()`` so the conflict-detection
+        pass sees up-to-date slew-completion events from the INDI backend.
+        Implementations that push events asynchronously may treat this as a no-op.
+        """
+        ...
+
     def activity_events(self) -> Iterable[DeviceActivityEvent]:
         """Yield normalized observed device activity for conflict detection."""

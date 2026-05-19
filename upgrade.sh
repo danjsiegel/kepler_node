@@ -79,6 +79,41 @@ disable_desktop_camera_claimers() {
     pkill -f '/usr/libexec/gvfs-gphoto2-volume-monitor' >/dev/null 2>&1 || true
 }
 
+install_fuji_camera_keepalive() {
+    # Write the PTP keepalive loop script that the udev rule fires on camera attach.
+    # It pings the Fuji body every 2 minutes to suppress the ~5-minute auto-power-off.
+    cat > /usr/local/bin/kepler-camera-attach << 'ATTACH'
+#!/bin/bash
+# Kepler camera keepalive loop.
+# Runs from the udev add rule when a Fujifilm camera is connected.
+# Opens a PTP session every 2 minutes to suppress the camera's auto-power-off
+# timer.  Exits when the camera is no longer reachable (disconnect/power-off).
+
+LOGFILE=/var/log/kepler-camera-attach.log
+INTERVAL=120
+
+sleep 2
+
+echo "$(date -Iseconds) camera attached, starting keepalive loop (interval=${INTERVAL}s)" >> "$LOGFILE"
+
+while /usr/bin/gphoto2 --get-config /main/actions/bulb >> "$LOGFILE" 2>&1; do
+    sleep "$INTERVAL"
+done
+
+echo "$(date -Iseconds) camera unreachable, keepalive loop exiting" >> "$LOGFILE"
+ATTACH
+    chmod +x /usr/local/bin/kepler-camera-attach
+
+    cat > /etc/udev/rules.d/99-kepler-camera.rules << 'RULES'
+# Kepler: open a PTP session when a Fujifilm camera is connected so the body
+# recognises an active host and suppresses its auto-power-off timer.
+SUBSYSTEM=="usb", ATTR{idVendor}=="04cb", ACTION=="add", \
+    RUN+="/usr/bin/systemd-run --no-block --unit=kepler-camera-attach /usr/local/bin/kepler-camera-attach"
+RULES
+
+    udevadm control --reload-rules
+}
+
 usage() {
     cat <<EOF
 Kepler Node v1 Upgrade
@@ -305,6 +340,10 @@ ok "Managed service units refreshed"
 log "Step 3c: Preventing desktop camera auto-claimers..."
 disable_desktop_camera_claimers
 ok "Desktop camera auto-claimers disabled"
+
+log "Step 3d: Refreshing Fuji camera keepalive (udev rule + handler script)..."
+install_fuji_camera_keepalive
+ok "Fuji camera keepalive refreshed (/usr/local/bin/kepler-camera-attach + 99-kepler-camera.rules)"
 
 # ------------------------------------------------------------------ #
 # Step 4 — Update install manifest (in-progress)                      #

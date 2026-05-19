@@ -20,6 +20,7 @@ from fastapi import FastAPI
 
 from kepler_node.agent.authorship import AuthorshipTracker
 from kepler_node.agent.claw import ClawController
+from kepler_node.agent.ekos import DBusEkosAdapter, StubEkosAdapter
 from kepler_node.agent.node_management import LocalNodeManagementBackend
 from kepler_node.agent.session import RuntimeSession
 from kepler_node.api.app import build_app
@@ -55,6 +56,7 @@ def make_dev_app() -> FastAPI:
         store=FilesystemSessionStore(data_root=data_root),
         authorship_tracker=AuthorshipTracker(),
         verification_dir=verification_dir,
+        ekos_adapter=DBusEkosAdapter(),
     )
 
-    return build_app(controller=controller)
+    return build_app(controller=controller, ekos_output_dir=settings.ekos_output_dir)

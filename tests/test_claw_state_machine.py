@@ -131,6 +131,9 @@ class FakeMountBackend:
     def sync_to(self, position: MountPosition) -> None:
         self.synced_to = position
 
+    def poll_activity(self) -> None:
+        pass
+
     def activity_events(self) -> Iterable[DeviceActivityEvent]:
         return iter(self._events)
 
@@ -2140,3 +2143,97 @@ def test_fail_preserves_existing_session_metadata(
         "run parameters must survive fail()"
     )
     assert session_json["terminal_outcome"] == "failed"
+
+
+# ------------------------------------------------------------------ #
+# camera_keepalive                                                     #
+# ------------------------------------------------------------------ #
+
+
+class _HeartbeatCamera(FakeCameraBackend):
+    """FakeCameraBackend variant with configurable heartbeat and reconnect."""
+
+    def __init__(
+        self,
+        *,
+        heartbeat_ok: bool = True,
+        reconnect_ok: bool = True,
+    ) -> None:
+        super().__init__()
+        self._heartbeat_ok = heartbeat_ok
+        self._reconnect_ok = reconnect_ok
+        self.connect_calls = 0
+
+    def heartbeat(self) -> bool:
+        return self._heartbeat_ok
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+        if not self._reconnect_ok:
+            raise RuntimeError("camera unreachable after keepalive failure")
+
+
+def test_camera_keepalive_skipped_when_state_not_idle(tmp_path: Path) -> None:
+    """keepalive is a no-op for states outside _CAMERA_KEEPALIVE_STATES."""
+    cam = _HeartbeatCamera(heartbeat_ok=False)
+    ctrl = _make_controller(camera=cam, tmp_path=tmp_path)
+    ctrl.session.state = ClawState.BOOT
+
+    result = ctrl.camera_keepalive()
+
+    assert result.next_state == ClawState.BOOT
+    assert "skipped" in result.message
+    assert cam.connect_calls == 0
+
+
+def test_camera_keepalive_noop_when_heartbeat_succeeds(tmp_path: Path) -> None:
+    """A successful heartbeat leaves state unchanged."""
+    cam = _HeartbeatCamera(heartbeat_ok=True)
+    ctrl = _make_controller(camera=cam, tmp_path=tmp_path)
+    ctrl.session.state = ClawState.READY
+
+    result = ctrl.camera_keepalive()
+
+    assert result.next_state == ClawState.READY
+    assert "ok" in result.message
+    assert cam.connect_calls == 0
+
+
+def test_camera_keepalive_reconnects_after_heartbeat_failure(tmp_path: Path) -> None:
+    """Heartbeat failure triggers a reconnect attempt; state stays if reconnect succeeds."""
+    cam = _HeartbeatCamera(heartbeat_ok=False, reconnect_ok=True)
+    ctrl = _make_controller(camera=cam, tmp_path=tmp_path)
+    ctrl.session.state = ClawState.READY
+
+    result = ctrl.camera_keepalive()
+
+    assert cam.connect_calls == 1
+    assert result.next_state == ClawState.READY
+    assert "reconnected" in result.message
+
+
+def test_camera_keepalive_pauses_session_when_reconnect_fails(tmp_path: Path) -> None:
+    """Failed heartbeat + failed reconnect transitions to PAUSED with camera_disconnected blocker."""
+    cam = _HeartbeatCamera(heartbeat_ok=False, reconnect_ok=False)
+    ctrl = _make_controller(camera=cam, tmp_path=tmp_path)
+    ctrl.session.state = ClawState.READY
+
+    result = ctrl.camera_keepalive()
+
+    assert result.next_state == ClawState.PAUSED
+    assert ctrl.session.state == ClawState.PAUSED
+    blocker_names = [b.name for b in result.blockers]
+    assert "camera_disconnected" in blocker_names
+
+
+def test_camera_keepalive_allowed_in_paused_and_target_acquired(tmp_path: Path) -> None:
+    """keepalive fires in PAUSED and TARGET_ACQUIRED, not just READY."""
+    for state in (ClawState.PAUSED, ClawState.TARGET_ACQUIRED):
+        cam = _HeartbeatCamera(heartbeat_ok=True)
+        ctrl = _make_controller(camera=cam, tmp_path=tmp_path)
+        ctrl.session.state = state
+
+        result = ctrl.camera_keepalive()
+
+        assert result.next_state == state, f"expected to stay in {state}"
+        assert "ok" in result.message

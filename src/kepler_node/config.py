@@ -37,3 +37,9 @@ class Settings(BaseSettings):
     # Local API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+
+    # Ekos output directory: the directory Ekos lands completed frames into.
+    # When set, the API lifespan starts a FrameWatcher loop that ingests each
+    # newly landed frame into the rolling quality session and feeds the
+    # intervention policy engine.  Leave None to disable the watcher.
+    ekos_output_dir: Path | None = Field(default=None)

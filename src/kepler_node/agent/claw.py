@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from kepler_node.agent.authorship import AuthorshipTracker
+from kepler_node.agent.ekos import EkosAdapterProtocol, StubEkosAdapter
 from kepler_node.agent.interfaces import (
     DeviceActivityEvent,
     DeviceActivityEventType,
@@ -38,6 +39,15 @@ from kepler_node.storage.models import (
 
 # Reconnect backoff ladder (spec line 1125: ~5s, 15s, 30s per attempt)
 _RECONNECT_BACKOFF_SECONDS = [5.0, 15.0, 30.0]
+
+# States where a camera keepalive probe is safe to run (camera connected, not
+# actively capturing or in recovery).  Any state outside this set is either
+# pre-connect or has an in-flight gphoto2/solver process.
+_CAMERA_KEEPALIVE_STATES = {
+    ClawState.READY,
+    ClawState.PAUSED,
+    ClawState.TARGET_ACQUIRED,
+}
 
 
 # Solve failure categories that are solver-specific (re-evaluate existing frame)
@@ -124,6 +134,7 @@ class ClawController:
         authorship_tracker: AuthorshipTracker,
         verification_dir: Path,
         test_exposure_seconds: float = 5.0,
+        ekos_adapter: EkosAdapterProtocol | None = None,
     ) -> None:
         self.session = session
         self.node = node_backend
@@ -134,6 +145,7 @@ class ClawController:
         self.authorship = authorship_tracker
         self.verification_dir = verification_dir
         self.test_exposure_seconds = test_exposure_seconds
+        self.ekos: EkosAdapterProtocol = ekos_adapter or StubEkosAdapter()
         self._event_sequence: int = 0
         self._node_event_sequence: int = 0
         self._node_events: list[EventRecord] = []
@@ -370,6 +382,229 @@ class ClawController:
         self.session.reconnect_attempts = 0
         self.session.state = ClawState.READY
         return self._make_transition(prev, ClawState.READY, "all adapters connected")
+
+    def camera_keepalive(self) -> TransitionResult:
+        """Send a cheap liveness probe to prevent camera auto-power-off.
+
+        Only fires when the session is in an idle-but-connected state so it
+        never races with an in-flight gphoto2 or solver process.  When the
+        Ekos adapter reports the sequence is actively capturing, the keepalive
+        is skipped — Ekos/INDI already proves camera liveness in that case and
+        a gphoto2 heartbeat would race with the active capture path.  If the
+        heartbeat fails the method attempts to reconnect.  A failed reconnect
+        transitions the session to PAUSED with a ``camera_disconnected``
+        blocker so the operator is notified immediately.
+        """
+        prev = self.session.state
+        if prev not in _CAMERA_KEEPALIVE_STATES:
+            return self._make_transition(prev, prev, "camera keepalive skipped: state not idle")
+
+        # Skip if Ekos reports the sequence is active — INDI path already proves liveness.
+        try:
+            ekos_status = self.ekos.status()
+            if ekos_status.active and not ekos_status.paused:
+                return self._make_transition(
+                    prev, prev, "camera keepalive skipped: Ekos sequence active"
+                )
+        except Exception:
+            pass  # If we can't query Ekos, proceed with the heartbeat.
+
+        if self.camera.heartbeat():
+            return self._make_transition(prev, prev, "camera keepalive ok")
+
+        # Heartbeat failed — camera may have auto-powered off.  Attempt reconnect.
+        self._emit_event(
+            EventType.RECOVERY_ATTEMPT,
+            "camera keepalive: heartbeat failed, attempting reconnect",
+            EventSeverity.WARNING,
+        )
+        try:
+            self.camera.connect()
+            self._emit_event(
+                EventType.RECOVERY_ATTEMPT,
+                "camera keepalive: reconnected after heartbeat failure",
+                EventSeverity.WARNING,
+            )
+            return self._make_transition(prev, prev, "camera keepalive: reconnected after heartbeat failure")
+        except Exception as exc:
+            blocker = ReadinessCondition(
+                name="camera_disconnected",
+                severity="blocking",
+                summary=f"Camera heartbeat failed and reconnect failed: {exc}",
+                operator_action_required=(
+                    "Check USB connection, power on camera, and resume"
+                ),
+            )
+            self.session.pause(
+                pause_reason="camera_keepalive_reconnect_failed",
+                resume_state=prev,
+                workflow_intent=self.session.workflow_intent or WorkflowIntent.CALIBRATION,
+                operator_action_required=blocker.operator_action_required,
+            )
+            self._emit_event(
+                EventType.OPERATOR_ACTION_REQUIRED,
+                f"camera keepalive: reconnect failed ({exc})",
+                EventSeverity.ERROR,
+                details={"error": str(exc)},
+            )
+            result = self._make_transition(
+                prev, ClawState.PAUSED, f"camera disconnected: reconnect failed ({exc})"
+            )
+            result.blockers = [blocker]
+            return result
+
+    def observe_landed_frame(
+        self,
+        image_path: Path,
+        quality_result: "QualityCheckResult",
+        quality_session: object | None = None,
+    ) -> TransitionResult | None:
+        """Observe a newly landed Ekos frame and update rolling session quality state.
+
+        This is the bridge between the FrameWatcher observation path and the
+        Claw intervention policy.  Steps:
+
+        1. Persist the frame into session storage when a session is active.
+        2. When the session state is CAPTURE, translate the rolling session
+           recommendation and forward the quality assessment to
+           ``evaluate_guard()`` so the intervention policy can react.
+
+        Returns the ``evaluate_guard`` TransitionResult when forwarded, or
+        ``None`` when there is no active session or the session is not in a
+        capture-active state.
+        """
+        import logging as _lg
+
+        from kepler_node.imaging.frame_quality import FrameQualitySession
+        from kepler_node.imaging.ingestion import ingest_frame
+        from kepler_node.imaging.protocols import QualityCheckResult
+
+        _local_logger = _lg.getLogger(__name__)
+
+        fqs: FrameQualitySession | None = (
+            quality_session if isinstance(quality_session, FrameQualitySession) else None
+        )
+
+        # Persist the frame record whenever a session is active.
+        if self.session.session_id is not None:
+            try:
+                ingest_frame(
+                    session_id=self.session.session_id,
+                    image_path=image_path,
+                    quality_result=quality_result,
+                    store=self.store,
+                    quality_session=fqs,
+                )
+            except Exception:
+                _local_logger.exception(
+                    "observe_landed_frame: ingest_frame raised for %s", image_path.name
+                )
+
+        # Forward to evaluate_guard only when actively capturing.
+        if self.session.state != ClawState.CAPTURE:
+            return None
+
+        # Translate the rolling session recommendation to the evaluate_guard format.
+        recommendation: str | None = None
+        if fqs is not None:
+            rec = fqs.recommendation()
+            if rec != FrameQualitySession.Recommendation.CONTINUE:
+                recommendation = str(rec)  # StrEnum value: "trigger_autofocus" etc.
+
+        quality_overall = str(quality_result.overall)  # "pass", "warn", or "fail"
+        return self.evaluate_guard(
+            quality_overall=quality_overall,
+            quality_details={k: str(v) for k, v in quality_result.checks.items()},
+            quality_recommendation=recommendation,
+        )
+
+    def run_verification_solve(
+        self,
+        image_path: Path,
+        *,
+        reason: str = "post_intervention",
+        expected_ra_hours: float | None = None,
+        expected_dec_deg: float | None = None,
+        blind: bool = False,
+    ) -> "VerificationSolveResult":
+        """Independently verify pointing using a recently landed or test-capture frame.
+
+        This is an audit and recovery confidence helper — not a replacement for
+        the KStars/Ekos primary solve-center-capture loop.
+
+        Steps:
+        1. Solve the frame via ``VerificationSolveHelper``.
+        2. Persist the result as a ``FrameRecord`` with ``frame_role="verification"``
+           so the session history has an explainable audit trail.
+        3. If the solve reports the pointing is not safe to resume, request an
+           Ekos re-verify (re-solve / re-center) via the intervention adapter.
+
+        Returns:
+            The ``VerificationSolveResult`` for the caller to inspect.
+        """
+        from kepler_node.imaging.ingestion import ingest_frame
+        from kepler_node.imaging.protocols import QualityCheckResult, QualityClassification
+        from kepler_node.imaging.verification import VerificationSolveHelper, VerificationSolveResult
+
+        helper = VerificationSolveHelper(self.solver, reason=reason)
+        vr: VerificationSolveResult = helper.solve_for_verification(
+            image_path,
+            expected_ra_hours=expected_ra_hours,
+            expected_dec_deg=expected_dec_deg,
+            blind=blind,
+        )
+
+        # Persist the verification result so the session history is explainable.
+        if self.session.session_id is not None:
+            sr = vr.solve_result
+            solve_summary: dict[str, object] = {
+                "success": sr.success,
+                "reason": reason,
+                "confidence": vr.confidence,
+                "safe_to_resume": vr.safe_to_resume,
+            }
+            if sr.solved_ra_hours is not None:
+                solve_summary["solved_ra_hours"] = sr.solved_ra_hours
+            if sr.solved_dec_deg is not None:
+                solve_summary["solved_dec_deg"] = sr.solved_dec_deg
+            if sr.residual_arcmin is not None:
+                solve_summary["residual_arcmin"] = sr.residual_arcmin
+            if sr.failure_category is not None:
+                solve_summary["failure_category"] = str(sr.failure_category)
+
+            qual_overall = QualityClassification.PASS if sr.success else QualityClassification.FAIL
+            quality_result = QualityCheckResult(
+                overall=qual_overall,
+                checks={"solve": qual_overall},
+                metrics={"residual_arcmin": sr.residual_arcmin or 0.0},
+                summary=vr.confidence,
+            )
+            try:
+                ingest_frame(
+                    session_id=self.session.session_id,
+                    image_path=image_path,
+                    quality_result=quality_result,
+                    store=self.store,
+                    frame_role="verification",
+                    solve_result_summary=dict(solve_summary),
+                )
+            except Exception:
+                _logger.exception(
+                    "run_verification_solve: ingest_frame raised for %s", image_path.name
+                )
+
+        # If pointing is not safe to resume, request Ekos to re-verify.
+        if not vr.safe_to_resume:
+            ok = self.ekos.request_reverify()
+            self._emit_event(
+                EventType.CORRECTIVE_ACTION,
+                f"verification solve: not safe to resume ({vr.confidence}); "
+                f"Ekos re-verify requested (ok={ok})",
+                EventSeverity.WARNING,
+                details={"reason": reason, "safe_to_resume": "false", "ekos_reverify_ok": str(ok)},
+            )
+
+        return vr
 
     def check_readiness(self) -> list[ReadinessCondition]:
         """Return the current list of blocking readiness conditions.
@@ -820,6 +1055,7 @@ class ClawController:
         quality_overall: str,
         quality_details: dict[str, Any] | None = None,
         frames_remaining: int | None = None,
+        quality_recommendation: str | None = None,
     ) -> TransitionResult:
         """Evaluate session health after a frame and decide the next state.
 
@@ -829,11 +1065,23 @@ class ClawController:
         - pause on the third if the issue persists
         Also checks for storage and power blocking conditions before
         allowing the next frame.
+
+        The optional ``quality_recommendation`` accepts a normalized
+        ``FrameQualitySession.Recommendation`` value (as a string) from the
+        rolling session trend tracker.  Supported values and their policy:
+
+        - ``"trigger_autofocus"``: request Ekos autofocus before the next frame
+        - ``"pause_sensor"``: pause to let the sensor cool
+        - ``"pause_weather"``: pause for sky transparency recovery
+        - ``"warn"``: emit a warning event but continue
+        - ``"continue"`` / None: no rolling-trend action required
         """
         prev = self.session.state
         details: dict[str, Any] = {"quality": quality_overall}
         if quality_details:
             details["quality_details"] = quality_details
+        if quality_recommendation:
+            details["quality_recommendation"] = quality_recommendation
 
         self._emit_event(
             EventType.QUALITY_ASSESSMENT,
@@ -916,6 +1164,59 @@ class ClawController:
         elif quality_overall == "pass":
             self.session.consecutive_bad_frames = 0
 
+        # Rolling session trend policy (from FrameQualitySession recommendations)
+        if quality_recommendation == "trigger_autofocus":
+            self._emit_event(
+                EventType.CORRECTIVE_ACTION,
+                "guard: rolling trend → requesting autofocus from Ekos",
+                EventSeverity.WARNING,
+                details={"trigger": "hfr_drift"},
+            )
+            ok = self.ekos.request_autofocus()
+            if not ok:
+                self._emit_event(
+                    EventType.WARNING,
+                    "guard: Ekos autofocus request failed; continuing capture",
+                    EventSeverity.WARNING,
+                )
+            # Record the intervention request so authorship tracking can match it
+            self.authorship.record(
+                DeviceActivityEvent(
+                    event_type=DeviceActivityEventType.SEQUENCE_STATUS_UPDATED,
+                    observed_at=datetime.now(UTC),
+                    details={"action": "autofocus_requested"},
+                )
+            )
+        elif quality_recommendation in ("pause_sensor", "pause_weather"):
+            pause_reason = quality_recommendation
+            self.session.pause(
+                pause_reason=pause_reason,
+                resume_state=ClawState.CAPTURE,
+                workflow_intent=WorkflowIntent.CAPTURE,
+                operator_action_required=(
+                    "Wait for sensor to cool and resume"
+                    if quality_recommendation == "pause_sensor"
+                    else "Wait for sky conditions to improve and resume"
+                ),
+            )
+            ok = self.ekos.pause()
+            self._emit_event(
+                EventType.CORRECTIVE_ACTION,
+                f"guard: rolling trend → pausing for {pause_reason}",
+                EventSeverity.WARNING,
+                details={"trigger": pause_reason, "ekos_pause_ok": str(ok)},
+            )
+            return self._make_transition(
+                prev, ClawState.PAUSED, f"guard: paused for {pause_reason}"
+            )
+        elif quality_recommendation == "warn":
+            self._emit_event(
+                EventType.WARNING,
+                "guard: rolling session trend warning",
+                EventSeverity.WARNING,
+                details=details,
+            )
+
         # Conflict check between frames
         conflict = self._check_conflicts()
         if conflict:
@@ -925,6 +1226,7 @@ class ClawController:
 
         self.session.state = ClawState.CAPTURE
         return self._make_transition(prev, ClawState.CAPTURE, "guard passed, continuing capture")
+
 
     def recover(
         self,
@@ -1073,6 +1375,21 @@ class ClawController:
 
         resume_state = ctx.resume_state
         resume_intent = ctx.workflow_intent
+
+        ok = self.ekos.resume()
+        if not ok:
+            self._emit_event(
+                EventType.WARNING,
+                "resume: ekos.resume() failed; session stays paused",
+                EventSeverity.WARNING,
+            )
+            return self._make_transition(
+                prev,
+                ClawState.PAUSED,
+                "resume blocked: Ekos resume request failed",
+                details={"pause_reason": ctx.pause_reason, "ekos_resume_ok": "False"},
+            )
+
         self.session.state = resume_state
         self.session.workflow_intent = resume_intent
         self.session.resume_context = None
@@ -1089,6 +1406,21 @@ class ClawController:
         Returns True if a conflict was detected and the session was paused.
         """
         return self._check_conflicts()
+
+    def poll_ekos_observation(self) -> None:
+        """Poll Ekos for current device state and queue observation events.
+
+        Called periodically by the background observation loop to populate the
+        Ekos adapter's event queue with focus position, camera temperature, and
+        capture-sequence status.  Events are drained by ``_check_conflicts()``
+        on the next conflict-detection pass.
+
+        Failures in any individual poll are silently swallowed by the adapter;
+        this method never raises.
+        """
+        self.ekos.poll_focus()
+        self.ekos.poll_temperature()
+        self.ekos.poll_sequence_status()
 
     # ------------------------------------------------------------------ #
     # Private loop steps                                                   #
@@ -1471,6 +1803,13 @@ class ClawController:
         if not self.session.control_locked:
             return False
 
+        # Populate mount observation events before draining them so the
+        # position-based slew-completion detection runs on each pass.
+        try:
+            self.mount.poll_activity()
+        except Exception:
+            pass
+
         for event in self.mount.activity_events():
             if self.authorship.is_conflict(event, control_locked=True):
                 self._pause_on_conflict("mount", str(event.event_type))
@@ -1479,6 +1818,11 @@ class ClawController:
         for event in self.camera.activity_events():
             if self.authorship.is_conflict(event, control_locked=True):
                 self._pause_on_conflict("camera", str(event.event_type))
+                return True
+
+        for event in self.ekos.observe():
+            if self.authorship.is_conflict(event, control_locked=True):
+                self._pause_on_conflict("ekos", str(event.event_type))
                 return True
 
         return False

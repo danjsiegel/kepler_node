@@ -35,6 +35,12 @@ class DeviceActivityEventType(StrEnum):
     MOUNT_SYNC_APPLIED = "mount_sync_applied"
     CAPTURE_STARTED = "capture_started"
     CAPTURE_COMPLETED = "capture_completed"
+    # Phase 2 observation events (read-only; not conflict-eligible by default)
+    FOCUS_POSITION_CHANGED = "focus_position_changed"
+    TEMPERATURE_READING = "temperature_reading"
+    CAPTURE_SEQUENCE_PAUSED = "capture_sequence_paused"
+    CAPTURE_SEQUENCE_RESUMED = "capture_sequence_resumed"
+    SEQUENCE_STATUS_UPDATED = "sequence_status_updated"
 
 
 class DeviceActivityEvent(BaseModel):

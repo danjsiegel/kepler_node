@@ -51,6 +51,13 @@ class QualityCheckResult(BaseModel):
     summary: str | None = None
 
 
+class QualityAnalyzer(Protocol):
+    """Frame quality analyzer contract used by Kepler guardrail logic."""
+
+    def analyze(self, image_path: Path) -> QualityCheckResult:
+        """Analyze a single frame and return a quality classification."""
+
+
 class SolverBackend(Protocol):
     """Solver contract used by Kepler orchestration."""
 
