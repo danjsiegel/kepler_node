@@ -660,3 +660,49 @@ def test_fuji_focus_bridge_verify_script_parses_indi_getprop_correctly() -> None
         "dot-delimited field after stripping the '=value' suffix — consistent "
         "with how mount/indi.py parses the INDI bus"
     )
+
+
+def test_fuji_focus_bridge_verify_script_uses_exact_focuser_property_matcher() -> None:
+    """The stock-driver probe must only match real focuser property names.
+
+    A broad substring such as FOC_ incorrectly matches unrelated properties like
+    ACTIVE_FOCUSER, producing false warnings on a stock CCD driver that has no
+    focuser interface. The probe should only match exact property names bounded
+    by dots in indi_getprop output.
+    """
+    content = (_REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh").read_text()
+    assert "FOC_\\|" not in content and "|FOC_" not in content, (
+        "fuji_focus_bridge_verify.sh must not use a broad FOC_ matcher because "
+        "it falsely matches non-focuser properties like ACTIVE_FOCUSER"
+    )
+    assert "grep -Ei '\\.(FOCUS_MOTION|FOCUS_STEPS|FOCUS_ABORT|FOCUS_STATUS|FOCUS_SPEED|REL_FOCUS|ABS_FOCUS)\\.'" in content, (
+        "fuji_focus_bridge_verify.sh must match only exact INDI focuser property "
+        "names bounded by dots in Device.Property.Element output"
+    )
+
+
+def test_fuji_focus_bridge_verify_script_checks_gp2_set_exit_code() -> None:
+    """gp2_set exit code must be captured and checked alongside text patterns.
+
+    A non-zero gphoto2 --set-config exit code must be treated as failure even
+    when stderr does not match the 'error|unsupported|failed' grep pattern.
+    Relying only on text patterns produces false-pass results when gphoto2 exits
+    non-zero silently or with an unrecognised error message.
+    """
+    content = (_REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh").read_text()
+    assert "INWARD_RC=$?" in content, (
+        "fuji_focus_bridge_verify.sh must capture the gp2_set exit code for the "
+        "inward move into INWARD_RC immediately after the command substitution"
+    )
+    assert "OUTWARD_RC=$?" in content, (
+        "fuji_focus_bridge_verify.sh must capture the gp2_set exit code for the "
+        "outward move into OUTWARD_RC immediately after the command substitution"
+    )
+    assert '${INWARD_RC}" -ne 0' in content, (
+        "fuji_focus_bridge_verify.sh must check INWARD_RC for non-zero before "
+        "deciding whether the inward move succeeded"
+    )
+    assert '${OUTWARD_RC}" -ne 0' in content, (
+        "fuji_focus_bridge_verify.sh must check OUTWARD_RC for non-zero before "
+        "deciding whether the outward move succeeded"
+    )

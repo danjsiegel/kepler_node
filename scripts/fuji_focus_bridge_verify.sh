@@ -22,9 +22,8 @@
 #   indi-gphoto exposes the Fuji camera as a CCD/DSLR device.
 #   It does NOT expose a standard INDI focuser interface (FOCUS_MOTION,
 #   FOCUS_STEPS, FOCUS_ABORT, FOCUS_STATUS properties) through stock
-#   indi_gphoto or indi_fuji drivers.  This is confirmed by inspecting
-#   the indi-gphoto and indi-fuji driver source; live INDI probe on the
-#   target Pi is pending (run with --probe-indi on target Pi to confirm).
+#   indi_gphoto_ccd or indi_fuji_ccd drivers. This is confirmed by driver
+#   source inspection and live target-Pi probes of both stock drivers.
 #   Therefore a custom INDI focuser sidecar is required.
 
 set -uo pipefail
@@ -272,7 +271,8 @@ else
         #   FOCUS_INWARD → gphoto2 --set-config /main/other/d171=-<ticks>
         info "Attempting inward move: d171 set to -${MOVE_STEPS_INWARD}"
         INWARD_OUT="$(gp2_set /main/other/d171 "-${MOVE_STEPS_INWARD}" 2>&1)"
-        info "Inward set output: ${INWARD_OUT}"
+        INWARD_RC=$?
+        info "Inward set output (exit ${INWARD_RC}): ${INWARD_OUT}"
 
         sleep 1
 
@@ -283,27 +283,28 @@ else
         #   FOCUS_OUTWARD → gphoto2 --set-config /main/other/d171=+<ticks>
         info "Attempting outward move: d171 set to ${MOVE_STEPS_OUTWARD}"
         OUTWARD_OUT="$(gp2_set /main/other/d171 "${MOVE_STEPS_OUTWARD}" 2>&1)"
-        info "Outward set output: ${OUTWARD_OUT}"
+        OUTWARD_RC=$?
+        info "Outward set output (exit ${OUTWARD_RC}): ${OUTWARD_OUT}"
 
         sleep 1
 
         D171_AFTER_OUTWARD="$(gp2_current /main/other/d171 2>/dev/null)"
         info "d171 after outward move (cycle ${cycle}): ${D171_AFTER_OUTWARD}"
 
-        # Evaluate write success for this cycle
-        if echo "${INWARD_OUT}" | grep -qi "error\|unsupported\|failed"; then
+        # Evaluate write success for this cycle: non-zero exit OR error text → failure
+        if [[ "${INWARD_RC}" -ne 0 ]] || echo "${INWARD_OUT}" | grep -qi "error\|unsupported\|failed"; then
             CYCLE_FAIL=true
-            fail "d171 inward write reported error on cycle ${cycle} — not usable as focus primitive in this posture"
-        elif echo "${OUTWARD_OUT}" | grep -qi "error\|unsupported\|failed"; then
+            fail "d171 inward write failed on cycle ${cycle} (exit ${INWARD_RC}) — not usable as focus primitive in this posture"
+        elif [[ "${OUTWARD_RC}" -ne 0 ]] || echo "${OUTWARD_OUT}" | grep -qi "error\|unsupported\|failed"; then
             CYCLE_FAIL=true
-            fail "d171 outward write reported error on cycle ${cycle} — not usable as focus primitive in this posture"
+            fail "d171 outward write failed on cycle ${cycle} (exit ${OUTWARD_RC}) — not usable as focus primitive in this posture"
         else
-            info "Cycle ${cycle}: d171 write operations completed without explicit error"
+            info "Cycle ${cycle}: d171 write operations completed without error (inward exit ${INWARD_RC}, outward exit ${OUTWARD_RC})"
         fi
     done
 
     if [[ "${CYCLE_FAIL}" == "false" ]]; then
-        pass "d171 write operations completed without explicit error across ${MOVE_CYCLES} cycle(s)"
+        pass "d171 write operations completed (zero exit code, no error text) across ${MOVE_CYCLES} cycle(s)"
         info "Note: d171 is not a calibrated linear axis; readback value may not reflect physical position exactly"
         info "Note: repeatability across ${MOVE_CYCLES} cycle(s) observed — verify physical lens motion separately"
     fi
@@ -346,7 +347,7 @@ else
 
             # Look for standard INDI focuser property names
             FOCUSER_PROPS="$(indi_getprop -h "${INDI_HOST}" -p "${INDI_PORT}" "*.*.*" 2>&1 | \
-                grep -i 'FOCUS_MOTION\|FOCUS_STEPS\|FOCUS_ABORT\|FOCUS_STATUS\|FOCUS_SPEED\|FOC_\|REL_FOCUS\|ABS_FOCUS' || true)"
+                grep -Ei '\.(FOCUS_MOTION|FOCUS_STEPS|FOCUS_ABORT|FOCUS_STATUS|FOCUS_SPEED|REL_FOCUS|ABS_FOCUS)\.' || true)"
 
             if [[ -z "${FOCUSER_PROPS}" ]]; then
                 pass "No standard INDI focuser properties found on stock profile — custom sidecar required"
