@@ -602,6 +602,26 @@ def test_fuji_focus_bridge_driver_setup_runbook_exists() -> None:
         "indiwebmanager profile alongside the Fuji camera"
     )
 
+
+def test_fuji_focus_bridge_cmake_falls_back_without_indiconfig() -> None:
+    content = (_REPO_ROOT / "indi" / "fuji_focus_bridge" / "CMakeLists.txt").read_text()
+    assert "find_package(INDI QUIET)" in content, (
+        "indi/fuji_focus_bridge/CMakeLists.txt must not require INDIConfig.cmake unconditionally; "
+        "Debian/Raspberry Pi libindi-dev may not ship it"
+    )
+    assert "find_path(FUJI_FOCUS_BRIDGE_INDI_INCLUDE_PARENT_DIR NAMES libindi/indifocuser.h)" in content, (
+        "indi/fuji_focus_bridge/CMakeLists.txt must fall back to direct INDI header lookup when "
+        "INDIConfig.cmake is unavailable"
+    )
+    assert "find_library(FUJI_FOCUS_BRIDGE_INDI_DRIVER_LIBRARY NAMES indidriver libindidriver)" in content, (
+        "indi/fuji_focus_bridge/CMakeLists.txt must fall back to direct INDI driver library lookup "
+        "when INDIConfig.cmake is unavailable"
+    )
+    assert "FUJI_FOCUS_BRIDGE_INDI_INCLUDE_PARENT_DIR}/libindi" in content or "FUJI_FOCUS_BRIDGE_INDI_INCLUDE_DIR})" in content, (
+        "indi/fuji_focus_bridge/CMakeLists.txt must add the libindi header directory itself to the "
+        "include path so internal quoted headers like indidevapi.h resolve on Debian/Raspberry Pi"
+    )
+
 def test_fuji_focus_bridge_abort_uses_process_kill() -> None:
     cpp_path = _REPO_ROOT / "indi" / "fuji_focus_bridge" / "fuji_focus_bridge.cpp"
     content = cpp_path.read_text()
