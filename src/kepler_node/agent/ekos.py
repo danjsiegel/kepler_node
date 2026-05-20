@@ -298,6 +298,12 @@ class DBusEkosAdapter:
         values so supervisory policy can distinguish running from paused from
         idle without relying on booleans.  Returns ``EkosRuntimeState.UNKNOWN``
         on any transport failure rather than fabricating certainty.
+
+        Additional sequence fields (``sequence_exists``, ``exposure_active``,
+        ``job_name``, ``frames_done``, ``frames_total``, ``autofocus_active``,
+        ``align_active``) are queried defensively: each call is wrapped in its
+        own try/except so a partial DBus failure does not discard the fields
+        that did succeed.
         """
         try:
             iface = self._capture_iface()
@@ -317,11 +323,6 @@ class DBusEkosAdapter:
             else:
                 ekos_state = EkosRuntimeState.UNKNOWN
 
-            return NormalizedEkosSnapshot(
-                ekos_state=ekos_state,
-                confirmed_at=datetime.now(UTC),
-                details={"raw_status": state_str},
-            )
         except Exception as exc:
             _logger.debug("Ekos status query failed: %s", exc)
             return NormalizedEkosSnapshot(
@@ -329,6 +330,82 @@ class DBusEkosAdapter:
                 confirmed_at=datetime.now(UTC),
                 details={"error": str(exc)},
             )
+
+        # A sequence exists when Ekos is actively running/paused/etc., OR when
+        # the job queue has entries even in the idle state.  Compute this after
+        # querying job count so "idle with a loaded queue" is distinguishable
+        # from "idle with an empty queue" (spec lines 219-240).
+        #
+        # Sentinel -1 means the job-count query has not yet been attempted.
+        _job_count_sentinel: int = -1
+
+        exposure_active = False
+        try:
+            cap_iface = self._capture_iface()
+            exposure_active = bool(cap_iface.isCapturing())  # type: ignore[attr-defined]
+        except Exception as exc:
+            _logger.debug("Ekos isCapturing query failed: %s", exc)
+
+        job_name: str | None = None
+        try:
+            cap_iface = self._capture_iface()
+            raw_name = str(cap_iface.getJobName())  # type: ignore[attr-defined]
+            job_name = raw_name if raw_name else None
+        except Exception as exc:
+            _logger.debug("Ekos getJobName query failed: %s", exc)
+
+        frames_done = 0
+        frames_total = 0
+        try:
+            cap_iface = self._capture_iface()
+            frames_done = int(cap_iface.getProcessedCount())  # type: ignore[attr-defined]
+            frames_total = int(cap_iface.getJobCount())  # type: ignore[attr-defined]
+            _job_count_sentinel = frames_total
+        except Exception as exc:
+            _logger.debug("Ekos frame-count query failed: %s", exc)
+
+        # sequence_exists: derive from actual job-queue presence when possible so
+        # "idle with a loaded sequence" is represented correctly.
+        if ekos_state in {EkosRuntimeState.RUNNING, EkosRuntimeState.PAUSED,
+                          EkosRuntimeState.RESUMING, EkosRuntimeState.ABORTED}:
+            # Sequence is definitely loaded and active.
+            sequence_exists = True
+        elif ekos_state == EkosRuntimeState.IDLE and _job_count_sentinel >= 0:
+            # Idle but queue may still contain jobs (e.g. between runs).
+            sequence_exists = _job_count_sentinel > 0
+        else:
+            # UNKNOWN / UNAVAILABLE, or job-count query failed: conservative false.
+            sequence_exists = False
+
+        autofocus_active = False
+        try:
+            focus_iface = self._focus_iface()
+            # isAutoFocusDone() returns True when the run is complete or idle;
+            # False means a run is currently in progress.
+            autofocus_active = not bool(focus_iface.isAutoFocusDone())  # type: ignore[attr-defined]
+        except Exception as exc:
+            _logger.debug("Ekos autofocus-active query failed: %s", exc)
+
+        align_active = False
+        try:
+            align_iface = self._align_iface()
+            # isSolverComplete() returns True when no solve is running.
+            align_active = not bool(align_iface.isSolverComplete())  # type: ignore[attr-defined]
+        except Exception as exc:
+            _logger.debug("Ekos align-active query failed: %s", exc)
+
+        return NormalizedEkosSnapshot(
+            ekos_state=ekos_state,
+            confirmed_at=datetime.now(UTC),
+            sequence_exists=sequence_exists,
+            exposure_active=exposure_active,
+            job_name=job_name,
+            frames_done=frames_done,
+            frames_total=frames_total,
+            autofocus_active=autofocus_active,
+            align_active=align_active,
+            details={"raw_status": state_str},
+        )
 
     # ------------------------------------------------------------------
     # Read-only observation surface

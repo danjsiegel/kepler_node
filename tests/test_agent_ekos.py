@@ -89,6 +89,12 @@ def _make_fake_dbus(
     focus_position: int = 5000,
     temperature: float = -10.0,
     pause_raises: bool = False,
+    is_capturing: bool = False,
+    job_name: str = "",
+    processed_count: int = 0,
+    job_count: int = 0,
+    autofocus_done: bool = True,
+    solver_complete: bool = True,
 ) -> tuple[ModuleType, MagicMock, MagicMock, MagicMock]:
     """Build a fake dbus module for sys.modules injection.
 
@@ -97,13 +103,19 @@ def _make_fake_dbus(
     cap_iface = MagicMock()
     cap_iface.getSequenceQueueStatus.return_value = capture_status
     cap_iface.getCoolerTemperature.return_value = temperature
+    cap_iface.isCapturing.return_value = is_capturing
+    cap_iface.getJobName.return_value = job_name
+    cap_iface.getProcessedCount.return_value = processed_count
+    cap_iface.getJobCount.return_value = job_count
     if pause_raises:
         cap_iface.pause.side_effect = RuntimeError("DBus call failed")
 
     foc_iface = MagicMock()
     foc_iface.getAutoFocusPosition.return_value = focus_position
+    foc_iface.isAutoFocusDone.return_value = autofocus_done
 
     align_iface = MagicMock()
+    align_iface.isSolverComplete.return_value = solver_complete
 
     obj = MagicMock()
     session_bus = MagicMock()
@@ -317,4 +329,227 @@ class _dbus_patched:
             sys.modules.pop("dbus", None)
         else:
             sys.modules["dbus"] = self._prev  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: DBusEkosAdapter.status() populates full NormalizedEkosSnapshot
+# ---------------------------------------------------------------------------
+
+
+def test_dbus_adapter_status_populates_sequence_exists_when_running() -> None:
+    """status() must set sequence_exists=True when Ekos reports a running state."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(capture_status="Running")
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.sequence_exists is True
+
+
+def test_dbus_adapter_status_sequence_exists_false_when_idle() -> None:
+    """status() must set sequence_exists=False when Ekos is idle."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(capture_status="Idle")
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.sequence_exists is False
+
+
+def test_dbus_adapter_status_exposure_active() -> None:
+    """status() must populate exposure_active from isCapturing()."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        is_capturing=True,
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.exposure_active is True
+
+
+def test_dbus_adapter_status_exposure_inactive() -> None:
+    """status() must set exposure_active=False when isCapturing() returns False."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        is_capturing=False,
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.exposure_active is False
+
+
+def test_dbus_adapter_status_job_name_populated() -> None:
+    """status() must populate job_name from getJobName()."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        job_name="Andromeda_L",
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.job_name == "Andromeda_L"
+
+
+def test_dbus_adapter_status_job_name_empty_is_none() -> None:
+    """status() must return job_name=None when getJobName() returns empty string."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        job_name="",
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.job_name is None
+
+
+def test_dbus_adapter_status_frame_counts_populated() -> None:
+    """status() must populate frames_done and frames_total from DBus."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        processed_count=42,
+        job_count=100,
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.frames_done == 42
+    assert status.frames_total == 100
+
+
+def test_dbus_adapter_status_autofocus_active_when_not_done() -> None:
+    """status() must set autofocus_active=True when isAutoFocusDone() returns False."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        autofocus_done=False,  # still running
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.autofocus_active is True
+
+
+def test_dbus_adapter_status_autofocus_inactive_when_done() -> None:
+    """status() must set autofocus_active=False when isAutoFocusDone() returns True."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        autofocus_done=True,
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.autofocus_active is False
+
+
+def test_dbus_adapter_status_align_active_when_solver_running() -> None:
+    """status() must set align_active=True when isSolverComplete() returns False."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        solver_complete=False,  # solver still running
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.align_active is True
+
+
+def test_dbus_adapter_status_align_inactive_when_solver_done() -> None:
+    """status() must set align_active=False when isSolverComplete() returns True."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        solver_complete=True,
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.align_active is False
+
+
+def test_dbus_adapter_status_partial_failure_graceful_fallback() -> None:
+    """status() must return a valid snapshot even when secondary DBus calls fail.
+
+    Phase 3 requirement: individual field queries are wrapped independently so
+    a partial failure does not discard the fields that succeeded.
+    """
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Running",
+        processed_count=10,
+        job_count=50,
+    )
+    # Make isCapturing() raise to simulate a partial DBus failure
+    cap_iface.isCapturing.side_effect = RuntimeError("property unavailable")
+
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+
+    # Primary state must still be populated
+    assert status.ekos_state == EkosRuntimeState.RUNNING
+    assert status.sequence_exists is True
+    # Failed field gracefully falls back to default
+    assert status.exposure_active is False
+    # Unaffected fields still populated from their own successful calls
+    assert status.frames_done == 10
+    assert status.frames_total == 50
+
+
+def test_dbus_adapter_status_unavailable_on_primary_failure() -> None:
+    """status() must return UNAVAILABLE snapshot when the primary status call fails."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus()
+    cap_iface.getSequenceQueueStatus.side_effect = RuntimeError("Ekos not running")
+
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+
+    assert status.ekos_state == EkosRuntimeState.UNAVAILABLE
+    assert "error" in status.details
+
+
+def test_dbus_adapter_status_raw_status_in_details() -> None:
+    """status() must preserve the raw Ekos status string in details['raw_status']."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(capture_status="Paused")
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.details.get("raw_status") == "Paused"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 round 2: sequence_exists from queue presence (Finding 2)
+# ---------------------------------------------------------------------------
+
+
+def test_dbus_adapter_status_sequence_exists_true_idle_with_loaded_queue() -> None:
+    """sequence_exists must be True when Ekos is IDLE but the job queue is non-empty.
+
+    Finding 2 (phase3_check_round1): 'idle with a loaded sequence' must be
+    distinguishable from 'idle with no sequence'.  The previous implementation
+    derived sequence_exists from state alone, so any IDLE report yielded False.
+    """
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Idle",
+        job_count=3,  # queue has 3 jobs → sequence exists
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.ekos_state == EkosRuntimeState.IDLE
+    assert status.sequence_exists is True, (
+        "sequence_exists must be True when IDLE but job queue has entries"
+    )
+
+
+def test_dbus_adapter_status_sequence_exists_false_idle_empty_queue() -> None:
+    """sequence_exists must be False when Ekos is IDLE with an empty job queue."""
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
+        capture_status="Idle",
+        job_count=0,  # empty queue → no sequence
+    )
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.ekos_state == EkosRuntimeState.IDLE
+    assert status.sequence_exists is False, (
+        "sequence_exists must be False when IDLE with an empty job queue"
+    )
 

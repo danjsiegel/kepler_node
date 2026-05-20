@@ -36,6 +36,11 @@ _WATCHER_POLL_INTERVAL_SECONDS = 2.0
 # the DBus interface.
 _EKOS_OBSERVATION_INTERVAL_SECONDS = 5.0
 
+# Poll interval for the mount read-only observation loop.  Kept equal to the
+# Ekos interval so external mount motion is noticed at roughly the same cadence
+# as Ekos capture-state changes.
+_MOUNT_OBSERVATION_INTERVAL_SECONDS = 5.0
+
 from kepler_node.agent.claw import ClawController
 from kepler_node.agent.interfaces import ReadinessCondition, TimeSource, TimeStatus
 from kepler_node.agent.node_management import confirm_time_action
@@ -304,13 +309,33 @@ async def _ekos_observation_loop(controller: ClawController) -> None:
             _logger.exception("ekos observation loop raised unexpectedly")
 
 
+async def _mount_observation_loop(controller: ClawController) -> None:
+    """Background coroutine: poll mount device state every _MOUNT_OBSERVATION_INTERVAL_SECONDS.
+
+    Calls ``controller.poll_mount_observation()`` to populate mount activity
+    events (including externally-authored slews) in the mount adapter queue.
+    Events are drained by ``_check_conflicts()`` during conflict detection,
+    making mount observation continuous and symmetric with Ekos observation.
+
+    Exceptions from individual polls are absorbed; this loop never propagates.
+    The interval sleep comes first so the node has time to finish startup.
+    """
+    while True:
+        await asyncio.sleep(_MOUNT_OBSERVATION_INTERVAL_SECONDS)
+        try:
+            controller.poll_mount_observation()
+        except Exception:
+            _logger.exception("mount observation loop raised unexpectedly")
+
+
 async def _frame_watcher_loop(controller: ClawController, output_dir: Path) -> None:
     """Background coroutine: watch *output_dir* for newly landed Ekos frames.
 
     Consumes the ``FrameWatcher.watch()`` async generator.  Each landed frame
     is forwarded to ``controller.observe_landed_frame()`` so the intervention
-    policy can react.  A single ``FrameQualitySession`` is created and reused
-    for the lifetime of the watcher to maintain rolling session quality state.
+    policy can react.  A ``FrameQualitySession`` is created per managed session:
+    when the controller's ``session_id`` changes the watcher's rolling quality
+    state is reset so the new session starts with a clean baseline.
     """
     from kepler_node.imaging.frame_quality import FrameQualitySession
     from kepler_node.imaging.watcher import FrameWatcher
@@ -318,8 +343,21 @@ async def _frame_watcher_loop(controller: ClawController, output_dir: Path) -> N
     quality_session = FrameQualitySession()
     watcher = FrameWatcher(output_dir, session=quality_session, poll_interval_seconds=_WATCHER_POLL_INTERVAL_SECONDS)
     _logger.info("frame watcher started on %s", output_dir)
+    last_session_id: str | None = controller.session.session_id
     try:
         async for path, result in watcher.watch():
+            # Reset rolling quality state whenever the managed session changes so
+            # each new session starts with a fresh baseline rather than inheriting
+            # history from the previous session.
+            current_session_id = controller.session.session_id
+            if current_session_id != last_session_id:
+                quality_session = FrameQualitySession()
+                # Re-attribute the current frame to the new session so the
+                # first post-switch frame is counted in the new session's
+                # rolling baseline rather than being silently lost.
+                quality_session.add(result)
+                watcher.set_session(quality_session)
+                last_session_id = current_session_id
             try:
                 controller.observe_landed_frame(path, result, quality_session)
             except Exception:
@@ -348,6 +386,7 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
         tasks = [
             asyncio.create_task(_camera_keepalive_loop(controller)),
             asyncio.create_task(_ekos_observation_loop(controller)),
+            asyncio.create_task(_mount_observation_loop(controller)),
         ]
         if ekos_output_dir is not None:
             tasks.append(asyncio.create_task(_frame_watcher_loop(controller, ekos_output_dir)))

@@ -208,7 +208,14 @@ class ClawController:
         # --- broker state ---
         try:
             broker_snap: BrokerSnapshot = self.broker.snapshot()
-            broker_state = broker_snap.broker_state
+            if broker_snap.is_stale:
+                broker_state = BrokerRuntimeState.UNKNOWN
+            elif broker_snap.broker_state == BrokerRuntimeState.READY and not broker_snap.device_path_available:
+                # Broker reports ready but the INDI device path is not accepting
+                # connections: treat as DEGRADED rather than READY.
+                broker_state = BrokerRuntimeState.DEGRADED
+            else:
+                broker_state = broker_snap.broker_state
         except Exception:
             broker_state = BrokerRuntimeState.UNKNOWN
 
@@ -495,10 +502,12 @@ class ClawController:
         if prev not in _CAMERA_KEEPALIVE_STATES:
             return self._make_transition(prev, prev, "camera keepalive skipped: state not idle")
 
-        # Skip if Ekos reports the sequence is active — INDI path already proves liveness.
+        # Skip if Ekos reports an active or in-progress exposure.  A paused sequence
+        # with exposure_active=True means a frame is still being captured on the
+        # normal INDI path; a gphoto2 heartbeat would race with that exposure.
         try:
             ekos_status = self.ekos.status()
-            if ekos_status.active and not ekos_status.paused:
+            if ekos_status.active or ekos_status.exposure_active:
                 return self._make_transition(
                     prev, prev, "camera keepalive skipped: Ekos sequence active"
                 )
@@ -581,8 +590,11 @@ class ClawController:
             quality_session if isinstance(quality_session, FrameQualitySession) else None
         )
 
-        # Persist the frame record whenever a session is active.
-        if self.session.session_id is not None:
+        # Persist the frame record only when a session is active and non-terminal.
+        # session_id remains set through COMPLETED/FAILED until acknowledge_complete()
+        # or clear_failure() is called, so we must gate out terminal states to avoid
+        # writing post-session frames into the completed session's record.
+        if self.session.session_id is not None and not self.session.is_terminal:
             try:
                 ingest_frame(
                     session_id=self.session.session_id,
@@ -1489,23 +1501,25 @@ class ClawController:
         # Spec lines 402-408: Kepler must not assume it owns the path merely
         # because it requested a pause.  If confirmation is missing, stale, or
         # contradictory, treat ownership as unknown and stay PAUSED.
+        # Also check broker state: if the broker is UNKNOWN we cannot verify
+        # the device path is safe to hand back (conservative precedence rule).
         try:
-            ekos_snap = self.ekos.status()
-            # Block if: state is unknown/stale (is_unknown), Ekos is actively
-            # RUNNING (contradictory to a paused posture), or Ekos is UNAVAILABLE
-            # (cannot verify pause confirmation).  IDLE is allowed through — it
-            # can legitimately mean the sequence finished before the resume request.
+            state = self.canonical_state()
+            # Block if: Ekos state is unknown/stale (canonical_state downgrades stale
+            # to UNKNOWN), Ekos is actively RUNNING (contradictory to a paused posture),
+            # Ekos is UNAVAILABLE (cannot verify pause confirmation), or the broker
+            # is UNKNOWN (device path trustworthiness cannot be confirmed).
             ekos_blocks_resume = (
-                ekos_snap.is_unknown
-                or ekos_snap.is_running
-                or ekos_snap.ekos_state == EkosRuntimeState.UNAVAILABLE
+                state.ekos_state in {EkosRuntimeState.UNKNOWN, EkosRuntimeState.UNAVAILABLE}
+                or state.ekos_state == EkosRuntimeState.RUNNING
+                or state.broker_state == BrokerRuntimeState.UNKNOWN
             )
             if ekos_blocks_resume:
                 self._emit_event(
                     EventType.WARNING,
-                    "resume: Ekos snapshot is unknown or stale; staying paused (active_owner=unknown)",
+                    "resume: canonical state unknown or stale; staying paused (active_owner=unknown)",
                     EventSeverity.WARNING,
-                    details={"ekos_state": str(ekos_snap.ekos_state), "is_stale": str(ekos_snap.is_stale)},
+                    details={"ekos_state": str(state.ekos_state), "broker_state": str(state.broker_state)},
                 )
                 # Window stays REQUESTED; ownership stays UNKNOWN.
                 self._intervention_window = InterventionWindowState.REQUESTED
@@ -1588,6 +1602,22 @@ class ClawController:
         self.ekos.poll_focus()
         self.ekos.poll_temperature()
         self.ekos.poll_sequence_status()
+
+    def poll_mount_observation(self) -> None:
+        """Poll mount adapter for new activity events and queue them for drain.
+
+        Called periodically by the background mount-observation loop.  Events
+        are queued by the adapter and drained by ``_check_conflicts()`` on the
+        next conflict-detection pass, keeping the mount observation path
+        symmetric with the Ekos observation path.
+
+        Exceptions from ``poll_activity()`` are silently swallowed; this method
+        never raises.
+        """
+        try:
+            self.mount.poll_activity()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Private loop steps                                                   #
@@ -1960,6 +1990,36 @@ class ClawController:
     # Conflict detection                                                   #
     # ------------------------------------------------------------------ #
 
+    def _drain_activity_queues(self) -> None:
+        """Drain all observation queues and update ``_last_significant_activity_at``.
+
+        Polls the mount adapter for fresh events, then consumes all pending
+        events from mount, camera, and Ekos adapters, updating the settle
+        timestamp when a significant event is found.  Does **not** perform
+        conflict detection or trigger any state transitions.
+
+        Called from ``confirm_ekos_paused()`` so that queued events from the
+        background observation loops are consumed before the activity-settle
+        check (spec line 398).  Also called internally by ``_check_conflicts()``
+        so that the drain logic is not duplicated.
+        """
+        try:
+            self.mount.poll_activity()
+        except Exception:
+            pass
+
+        for event in self.mount.activity_events():
+            if event.event_type in _SIGNIFICANT_ACTIVITY_TYPES:
+                self._last_significant_activity_at = event.observed_at
+
+        for event in self.camera.activity_events():
+            if event.event_type in _SIGNIFICANT_ACTIVITY_TYPES:
+                self._last_significant_activity_at = event.observed_at
+
+        for event in self.ekos.observe():
+            if event.event_type in _SIGNIFICANT_ACTIVITY_TYPES:
+                self._last_significant_activity_at = event.observed_at
+
     def _check_conflicts(self) -> bool:
         """Check mount and camera activity for external control conflicts.
 
@@ -2120,13 +2180,27 @@ class ClawController:
         semaphore as open").
         """
         try:
-            snap = self.ekos.status()
+            state = self.canonical_state()
         except Exception:
             return False
 
-        if not snap.is_paused:
-            # Snapshot is not paused, unknown, or stale — keep REQUESTED.
+        # Broker must be reachable (not UNKNOWN) to trust the canonical view.
+        # A stale or unreachable broker means we cannot verify the device path.
+        if state.broker_state == BrokerRuntimeState.UNKNOWN:
             return False
+
+        # Ekos must be confirmed paused in the canonical view.
+        # canonical_state() already downgrades a stale Ekos snapshot to UNKNOWN,
+        # so checking == PAUSED here implies freshness.
+        if state.ekos_state != EkosRuntimeState.PAUSED:
+            return False
+
+        # Drain any events queued by the background observation loops before
+        # checking the settle window.  Without this drain, events queued since
+        # the last _check_conflicts() call would leave _last_significant_activity_at
+        # stale and the window could open while device activity is still unsettled
+        # (spec line 398: activity must settle before the semaphore is open).
+        self._drain_activity_queues()
 
         # Check that device activity has settled (spec line 398).
         if self._last_significant_activity_at is not None:

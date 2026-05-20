@@ -35,18 +35,30 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_BROKER_FRESHNESS_TTL_SECONDS: float = 60.0
+
+
 class BrokerSnapshot:
     """Normalized snapshot of the INDI broker layer.
 
     Attributes:
-        broker_state:          Normalized state of the broker.
-        profile_active:        Name of the active INDI driver profile, or None.
-        device_path_available: True when the underlying indiserver / device
-                               path appears to be accepting connections.
-        confirmed_at:          UTC timestamp when this snapshot was taken.
+        broker_state:           Normalized state of the broker.
+        profile_active:         Name of the active INDI driver profile, or None.
+        device_path_available:  True when the underlying indiserver / device
+                                path appears to be accepting connections.
+        confirmed_at:           UTC timestamp when this snapshot was taken.
+        freshness_ttl_seconds:  Age limit in seconds before the snapshot is
+                                considered stale and treated as UNKNOWN in
+                                canonical synthesis.
     """
 
-    __slots__ = ("broker_state", "profile_active", "device_path_available", "confirmed_at")
+    __slots__ = (
+        "broker_state",
+        "profile_active",
+        "device_path_available",
+        "confirmed_at",
+        "freshness_ttl_seconds",
+    )
 
     def __init__(
         self,
@@ -55,11 +67,19 @@ class BrokerSnapshot:
         profile_active: str | None = None,
         device_path_available: bool = False,
         confirmed_at: datetime | None = None,
+        freshness_ttl_seconds: float = _DEFAULT_BROKER_FRESHNESS_TTL_SECONDS,
     ) -> None:
         self.broker_state = broker_state
         self.profile_active = profile_active
         self.device_path_available = device_path_available
         self.confirmed_at = confirmed_at or datetime.now(UTC)
+        self.freshness_ttl_seconds = freshness_ttl_seconds
+
+    @property
+    def is_stale(self) -> bool:
+        """True when the snapshot is older than the freshness TTL."""
+        age = (datetime.now(UTC) - self.confirmed_at).total_seconds()
+        return age > self.freshness_ttl_seconds
 
     def __repr__(self) -> str:  # pragma: no cover
         return (

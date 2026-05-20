@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import AsyncIterator, Callable
 
 from kepler_node.imaging.frame_quality import FrameQualityAnalyzer, FrameQualitySession
-from kepler_node.imaging.protocols import QualityAnalyzer, QualityCheckResult
+from kepler_node.imaging.protocols import QualityAnalyzer, QualityCheckResult, QualityClassification
 
 _logger = logging.getLogger(__name__)
 
@@ -74,7 +74,10 @@ class FrameWatcher:
             await asyncio.sleep(self._poll_interval)
             current = self._snapshot()
             new_files = current - self._seen
-            self._seen = current
+            # Mark pre-existing files as seen immediately; new files are only
+            # added to _seen after successful analysis so a partial-write or
+            # transient analysis failure is retried on the next poll cycle.
+            self._seen.update(current - new_files)
 
             for path in sorted(new_files):
                 # Small settle delay — give the writer time to finish flushing
@@ -84,6 +87,17 @@ class FrameWatcher:
                 except Exception:
                     _logger.exception("frame quality analysis failed for %s", path)
                     continue
+
+                # A load-FAIL means the file could not be opened at all (partial
+                # write / transient lock). Treat it as a retriable non-event:
+                # do not mark as seen, do not mutate the quality session, do
+                # not fire the callback, and do not yield — let the next poll
+                # cycle try again once the writer finishes.
+                if result.checks.get("load") == QualityClassification.FAIL:
+                    _logger.debug("frame %s load failed, will retry on next poll", path.name)
+                    continue
+
+                self._seen.add(path)
 
                 if self._session is not None:
                     self._session.add(result)
@@ -103,6 +117,15 @@ class FrameWatcher:
         """Signal the watch loop to exit after the current poll cycle."""
         self._running = False
         _logger.info("FrameWatcher stop requested")
+
+    def set_session(self, session: FrameQualitySession | None) -> None:
+        """Replace the rolling quality session used for accumulation.
+
+        Call this when the managed session changes so that a new session starts
+        with a fresh quality baseline rather than inheriting history from a
+        previous session.
+        """
+        self._session = session
 
     def _snapshot(self) -> set[Path]:
         """Return the set of frame paths currently in the watched directory."""

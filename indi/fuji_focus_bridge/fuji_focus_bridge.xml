@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    fuji_focus_bridge.xml — INDI driver metadata for the Fuji Focus Bridge sidecar.
+
+    This file must be installed into the INDI driver metadata directory so that
+    indiserver and indiwebmanager can discover the driver.
+
+    Typical install location: /usr/share/indi/fuji_focus_bridge.xml
+    See: lab/local/grind/artifacts/phase4_driver_setup.md for installation steps.
+-->
+<driversList>
+    <devGroup group="Focusers">
+        <device label="Fuji Focus Bridge" manufacturer="Kepler Node">
+            <driver name="Fuji Focus Bridge">indi_fuji_focus_bridge</driver>
+            <version>1.0</version>
+        </device>
+    </devGroup>
+</driversList>

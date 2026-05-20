@@ -467,3 +467,196 @@ def test_deploy_pi_workflow_targets_self_hosted_pi_runner() -> None:
     assert "scripts/deploy_pi.sh" in content, (
         "deploy-pi.yml must invoke the Pi-local deploy helper"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Fuji focus bridge sidecar contract checks
+# ---------------------------------------------------------------------------
+
+
+def test_fuji_focus_bridge_verify_script_exists() -> None:
+    script = _REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh"
+    assert script.exists(), (
+        "scripts/fuji_focus_bridge_verify.sh must exist as the reusable Pi-side "
+        "verification script for the Fuji focus bridge (Phase 4 acceptance check 2)"
+    )
+    content = script.read_text()
+    assert "#!/usr/bin/env bash" in content, (
+        "fuji_focus_bridge_verify.sh must have a bash shebang"
+    )
+
+
+def test_fuji_focus_bridge_verify_script_defaults_to_read_only() -> None:
+    content = (_REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh").read_text()
+    assert "ALLOW_MOVE=false" in content, (
+        "fuji_focus_bridge_verify.sh must default ALLOW_MOVE to false so the script "
+        "is safe to run without flags (Phase 4 acceptance check 2)"
+    )
+    assert "--allow-move" in content, (
+        "fuji_focus_bridge_verify.sh must expose --allow-move flag for opt-in motion"
+    )
+
+
+def test_fuji_focus_bridge_verify_script_has_indi_probe_flag() -> None:
+    content = (_REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh").read_text()
+    assert "PROBE_INDI=false" in content, (
+        "fuji_focus_bridge_verify.sh must default PROBE_INDI to false"
+    )
+    assert "--probe-indi" in content, (
+        "fuji_focus_bridge_verify.sh must expose --probe-indi flag so stock INDI "
+        "focuser support can be disproved before the custom driver is expanded"
+    )
+
+
+def test_fuji_focus_bridge_verify_script_probes_known_surfaces() -> None:
+    content = (_REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh").read_text()
+    for node in ("d171", "d262", "d209"):
+        assert node in content, (
+            f"fuji_focus_bridge_verify.sh must probe /main/other/{node} "
+            "(Phase 4 spec: script must read all focus-relevant Fuji nodes)"
+        )
+
+
+def test_fuji_focus_bridge_verify_script_ends_with_verdict() -> None:
+    content = (_REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh").read_text()
+    assert "PASS" in content and "FAIL" in content and "INCONCLUSIVE" in content, (
+        "fuji_focus_bridge_verify.sh must end with a human-readable PASS, FAIL, or "
+        "INCONCLUSIVE verdict rather than raw command output only"
+    )
+
+
+def test_fuji_focus_bridge_indi_driver_files_exist() -> None:
+    bridge_dir = _REPO_ROOT / "indi" / "fuji_focus_bridge"
+    assert bridge_dir.exists(), (
+        "indi/fuji_focus_bridge/ must exist as the standalone INDI focuser sidecar "
+        "(Phase 4 acceptance check 3)"
+    )
+    required_files = ("fuji_focus_bridge.cpp", "fuji_focus_bridge.h",
+                      "fuji_focus_bridge.xml", "CMakeLists.txt")
+    for fname in required_files:
+        assert (bridge_dir / fname).exists(), (
+            f"indi/fuji_focus_bridge/{fname} must exist for the sidecar to be buildable "
+            "and discoverable by indiserver"
+        )
+
+
+def test_fuji_focus_bridge_xml_declares_focuser_device() -> None:
+    xml_path = _REPO_ROOT / "indi" / "fuji_focus_bridge" / "fuji_focus_bridge.xml"
+    content = xml_path.read_text()
+    assert "Focusers" in content, (
+        "fuji_focus_bridge.xml must declare devGroup group='Focusers' so Ekos "
+        "discovers the sidecar as a focuser device (Phase 4 acceptance check 3)"
+    )
+    assert "indi_fuji_focus_bridge" in content, (
+        "fuji_focus_bridge.xml must reference the indi_fuji_focus_bridge driver binary"
+    )
+
+
+def test_fuji_focus_bridge_cpp_exposes_only_relative_move_contract() -> None:
+    cpp_path = _REPO_ROOT / "indi" / "fuji_focus_bridge" / "fuji_focus_bridge.cpp"
+    content = cpp_path.read_text()
+    assert "FOCUSER_CAN_REL_MOVE" in content, (
+        "fuji_focus_bridge.cpp must advertise FOCUSER_CAN_REL_MOVE capability "
+        "(Phase 4: minimum viable relative focuser semantics)"
+    )
+    assert "FOCUSER_CAN_ABS_MOVE" not in content, (
+        "fuji_focus_bridge.cpp must NOT advertise FOCUSER_CAN_ABS_MOVE — the bridge "
+        "does not provide absolute position guarantees (Phase 4 acceptance check 3)"
+    )
+
+
+def test_fuji_focus_bridge_uses_d171_as_focus_primitive() -> None:
+    cpp_path = _REPO_ROOT / "indi" / "fuji_focus_bridge" / "fuji_focus_bridge.cpp"
+    content = cpp_path.read_text()
+    assert "d171" in content, (
+        "fuji_focus_bridge.cpp must use /main/other/d171 as the focus move primitive — "
+        "the only proven writable focus surface on the XF55-200 + X-T5 posture"
+    )
+
+
+def test_fuji_focus_bridge_lens_profile_artifact_exists() -> None:
+    profile = _REPO_ROOT / "lab" / "local" / "grind" / "artifacts" / "xf55_200_lens_profile.md"
+    assert profile.exists(), (
+        "lab/local/grind/artifacts/xf55_200_lens_profile.md must exist as the "
+        "per-lens profile artifact required by Phase 4"
+    )
+    content = profile.read_text()
+    assert "d171" in content and "d262" in content, (
+        "xf55_200_lens_profile.md must document both d171 (proven) and d262 (unproven) "
+        "focus surfaces with their trust levels"
+    )
+
+
+def test_fuji_focus_bridge_driver_setup_runbook_exists() -> None:
+    runbook = _REPO_ROOT / "lab" / "local" / "grind" / "artifacts" / "phase4_driver_setup.md"
+    assert runbook.exists(), (
+        "lab/local/grind/artifacts/phase4_driver_setup.md must exist as the driver "
+        "setup runbook required by Phase 4"
+    )
+    content = runbook.read_text()
+    assert "indi_fuji_focus_bridge" in content, (
+        "phase4_driver_setup.md must reference indi_fuji_focus_bridge binary"
+    )
+    assert "indiwebmanager" in content, (
+        "phase4_driver_setup.md must document how the sidecar is added to an "
+        "indiwebmanager profile alongside the Fuji camera"
+    )
+
+def test_fuji_focus_bridge_abort_uses_process_kill() -> None:
+    cpp_path = _REPO_ROOT / "indi" / "fuji_focus_bridge" / "fuji_focus_bridge.cpp"
+    content = cpp_path.read_text()
+    assert "SIGTERM" in content, (
+        "fuji_focus_bridge.cpp must send SIGTERM to the in-flight gphoto2 child process "
+        "in AbortFocuser() — flag-only abort is not best-effort (Phase 4 spec line 325)"
+    )
+    assert "kill(" in content, (
+        "fuji_focus_bridge.cpp must call kill() to terminate the child PID; "
+        "setting m_abort alone does not abort a blocking gphoto2 subprocess"
+    )
+    assert "m_movePid" in content, (
+        "fuji_focus_bridge.cpp must track the child PID in m_movePid so AbortFocuser "
+        "knows which process to terminate"
+    )
+
+
+def test_fuji_focus_bridge_reports_ips_busy_during_move() -> None:
+    cpp_path = _REPO_ROOT / "indi" / "fuji_focus_bridge" / "fuji_focus_bridge.cpp"
+    content = cpp_path.read_text()
+    assert "IPS_BUSY" in content, (
+        "fuji_focus_bridge.cpp must publish IPS_BUSY on FocusRelPosNP before the "
+        "gphoto2 child process completes so Ekos sees the in-progress state immediately "
+        "rather than waiting on a blocking INDI call (Phase 4 spec: busy/idle semantics)"
+    )
+    assert "m_moveThread" in content, (
+        "fuji_focus_bridge.cpp must use a background thread (m_moveThread) so "
+        "MoveRelFocuser returns IPS_BUSY without blocking the INDI event loop"
+    )
+
+
+def test_fuji_focus_bridge_verify_script_parses_indi_getprop_correctly() -> None:
+    """indi_getprop output is 'Device.Property.Element=value' (no leading dot).
+
+    The script must extract device names by splitting on '=' first, then on '.'
+    to get the first field — the same convention used by mount/indi.py.  The old
+    broken pattern (grep '^[.]') would always produce an empty ALL_DEVICES list,
+    causing the script to FAIL on a live INDI bus and making stock-support
+    disproof impossible.
+    """
+    content = (_REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh").read_text()
+    # Must NOT use the broken leading-dot grep
+    assert "grep '^\\.'" not in content and 'grep "^\\."' not in content, (
+        "fuji_focus_bridge_verify.sh must NOT parse indi_getprop output with "
+        "grep '^\\.' — indi_getprop output has no leading dot; the pattern "
+        "always matches nothing, leaving ALL_DEVICES empty on a live bus"
+    )
+    # Must use the correct Device.Property.Element=value parse path
+    assert "cut -d= -f1" in content, (
+        "fuji_focus_bridge_verify.sh must extract the device name from "
+        "indi_getprop output by cutting on '=' first (format is "
+        "Device.Property.Element=value)"
+    )
+    assert "awk -F'.' '{print $1}'" in content, (
+        "fuji_focus_bridge_verify.sh must extract the device name as the first "
+        "dot-delimited field after stripping the '=value' suffix — consistent "
+        "with how mount/indi.py parses the INDI bus"
+    )

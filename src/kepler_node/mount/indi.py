@@ -35,10 +35,25 @@ class INDIMountBackend:
         self._pending_events: list[DeviceActivityEvent] = []
         # Tracks the pending slew target so poll_activity() can detect completion.
         self._slewing_to: MountPosition | None = None
+        # True while an externally-initiated (not Kepler-authored) slew is ongoing.
+        # Used to avoid emitting repeated events for the same external slew.
+        self._external_slew_active: bool = False
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _is_mount_slewing(self) -> bool:
+        """Return True when INDI reports the mount is currently slewing.
+
+        Reads the TELESCOPE_SLEWING.SLEWING property, which is set to ``On``
+        when the mount is in motion.  Returns False on any read failure.
+        """
+        try:
+            raw = self._getprop(f"{self._device_name}.TELESCOPE_SLEWING.SLEWING")
+            return "On" in raw
+        except Exception:
+            return False
 
     def _getprop(self, property_path: str, timeout: int = 5) -> str:
         result = subprocess.run(
@@ -107,6 +122,9 @@ class INDIMountBackend:
             f"DEC={position.dec_deg}"
         )
         self._slewing_to = position
+        # Clear any external-slew tracking so the Kepler-authored slew takes
+        # precedence in poll_activity().
+        self._external_slew_active = False
         self._pending_events.append(
             DeviceActivityEvent(
                 event_type=DeviceActivityEventType.MOUNT_SLEW_STARTED,
@@ -146,14 +164,34 @@ class INDIMountBackend:
     def poll_activity(self) -> None:
         """Poll INDI for observed mount activity and queue normalized events.
 
-        Compares the current mount position against the pending slew target to
-        detect completion.  Emits ``MOUNT_SLEW_COMPLETED`` when the observed
-        position is within the configured angular tolerance of the target.
+        When a Kepler-authored slew is pending: compares the current mount
+        position against the target to detect completion; emits
+        ``MOUNT_SLEW_COMPLETED`` once within tolerance.
 
-        Call this periodically from the orchestration loop during an active slew.
+        When no Kepler-authored slew is pending: polls the INDI
+        ``TELESCOPE_SLEWING.SLEWING`` property to detect externally-initiated
+        motion.  If the mount is slewing but Kepler did not initiate it, emits
+        ``MOUNT_SLEW_STARTED`` with ``authored_by="external"`` so the
+        orchestration layer's conflict detection can react.
+
+        Call this periodically from the orchestration loop.
         """
         if self._slewing_to is None:
+            # No Kepler-authored slew pending; check for external motion.
+            currently_slewing = self._is_mount_slewing()
+            if currently_slewing and not self._external_slew_active:
+                self._external_slew_active = True
+                self._pending_events.append(
+                    DeviceActivityEvent(
+                        event_type=DeviceActivityEventType.MOUNT_SLEW_STARTED,
+                        observed_at=datetime.now(UTC),
+                        details={"authored_by": "external"},
+                    )
+                )
+            elif not currently_slewing:
+                self._external_slew_active = False
             return
+
         try:
             current = self.current_position()
         except (RuntimeError, subprocess.TimeoutExpired, FileNotFoundError):

@@ -455,3 +455,133 @@ async def test_watcher_ignores_preexisting_files(tmp_path: Path) -> None:
     await asyncio.wait_for(task, timeout=3.0)
 
     assert all(p.name == "new_frame.jpg" for p, _ in results)
+
+
+@pytest.mark.anyio
+async def test_watcher_retries_failed_analysis_on_next_poll(tmp_path: Path) -> None:
+    """A file whose analysis fails on the first poll must be retried on the next.
+
+    Previously the watcher marked all current-snapshot files as seen before
+    attempting analysis, so a transient failure (partial write, locked file)
+    permanently dropped the frame.  After the fix, only successfully-analyzed
+    files are added to the seen set.
+    """
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from kepler_node.imaging.watcher import FrameWatcher
+    from kepler_node.imaging.protocols import QualityClassification
+
+    output_dir = tmp_path / "retry_out"
+    output_dir.mkdir()
+
+    call_count = [0]
+    good_result = MagicMock()
+    good_result.overall = QualityClassification.PASS
+    good_result.summary = "ok"
+    good_result.checks = {}
+
+    def _flaky_analyze(path):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise OSError("simulated partial write")
+        return good_result
+
+    analyzer = MagicMock()
+    analyzer.analyze.side_effect = _flaky_analyze
+
+    watcher = FrameWatcher(output_dir, analyzer, poll_interval_seconds=0.05)
+    results: list[tuple] = []
+
+    async def _collect() -> None:
+        async for path, result in watcher.watch():
+            results.append((path, result))
+            watcher.stop()
+
+    task = asyncio.create_task(_collect())
+    # Drop the frame after the watcher has taken its initial snapshot
+    await asyncio.sleep(0.1)
+    img = _star_field(n_stars=5)
+    _save(img, output_dir / "partial.jpg")
+    await asyncio.wait_for(task, timeout=3.0)
+
+    assert call_count[0] == 2, (
+        f"Expected analyze() called twice (fail then succeed), got {call_count[0]}"
+    )
+    assert len(results) == 1
+    assert results[0][0].name == "partial.jpg"
+
+
+@pytest.mark.anyio
+async def test_watcher_retries_load_fail_result_on_next_poll(tmp_path: Path) -> None:
+    """A file that returns a load-FAIL result must not be yielded and must be retried.
+
+    The default FrameQualityAnalyzer returns a QualityCheckResult with
+    checks["load"] == FAIL when cv2.imread cannot open the file (e.g. partial
+    write or corrupt header). That result must *not* be yielded, not added to the
+    quality session, not trigger the callback, and must leave the file unseen so
+    the next poll cycle retries it after it becomes valid.
+    """
+    import asyncio
+
+    from kepler_node.imaging.frame_quality import FrameQualityAnalyzer, FrameQualitySession
+    from kepler_node.imaging.protocols import QualityClassification
+    from kepler_node.imaging.watcher import FrameWatcher
+
+    output_dir = tmp_path / "retry_load_out"
+    output_dir.mkdir()
+
+    analyzer = FrameQualityAnalyzer()
+    session = FrameQualitySession()
+    callback_calls: list[tuple[Path, object]] = []
+    watcher = FrameWatcher(
+        output_dir, analyzer, session=session,
+        poll_interval_seconds=0.05,
+        on_new_frame=lambda p, r: callback_calls.append((p, r)),
+    )
+    results: list[tuple[Path, object]] = []
+
+    async def _collect() -> None:
+        async for path, result in watcher.watch():
+            results.append((path, result))
+            watcher.stop()
+
+    task = asyncio.create_task(_collect())
+    # Wait for the watcher to take its initial snapshot (no files yet)
+    await asyncio.sleep(0.1)
+
+    # Write an unreadable / corrupt file — cv2.imread will return None
+    bad_file = output_dir / "landing.jpg"
+    bad_file.write_bytes(b"not-an-image")
+
+    # Give the watcher several poll cycles to try and fail the load
+    await asyncio.sleep(0.3)
+
+    # Nothing must have been yielded, session must be pristine, callback silent
+    assert len(results) == 0, (
+        f"Load-FAIL must not be yielded; got {len(results)} results"
+    )
+    assert session.frame_count == 0, (
+        f"Load-FAIL must not mutate the quality session; frame_count={session.frame_count}"
+    )
+    assert len(callback_calls) == 0, (
+        f"Load-FAIL must not fire on_new_frame callback; got {len(callback_calls)} calls"
+    )
+
+    # Now overwrite with a valid image — watcher must retry and yield
+    img = _star_field(n_stars=5)
+    _save(img, bad_file)
+
+    await asyncio.wait_for(task, timeout=3.0)
+
+    assert len(results) == 1, (
+        "Expected one result after the file became readable; "
+        f"got {len(results)}"
+    )
+    assert results[0][0].name == "landing.jpg"
+    yielded_result = results[0][1]
+    assert yielded_result.checks.get("load") != QualityClassification.FAIL, (
+        "Yielded result must not be a load-FAIL"
+    )
+    assert session.frame_count == 1, "Valid frame must be added to the session"
+    assert len(callback_calls) == 1, "Valid frame must fire the callback"

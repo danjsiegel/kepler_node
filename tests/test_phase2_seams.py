@@ -405,6 +405,31 @@ def test_camera_keepalive_fires_when_ekos_idle(tmp_path: Path) -> None:
     ctrl.camera.heartbeat.assert_called_once()
 
 
+def test_camera_keepalive_skipped_when_paused_sequence_exposure_active(tmp_path: Path) -> None:
+    """camera_keepalive() must skip heartbeat when Ekos is paused but exposure_active=True.
+
+    Finding 1 (phase3_check_round1): a paused sequence with exposure_active=True
+    means a frame is still being captured on the normal INDI/Ekos path.  A
+    gphoto2 heartbeat would race with that active exposure.  The gate must
+    check exposure_active independently of the sequence-level paused flag.
+    """
+    from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
+    from kepler_node.agent.session import ClawState
+
+    ekos = MagicMock()
+    ekos.status.return_value = NormalizedEkosSnapshot(
+        ekos_state=EkosRuntimeState.PAUSED,
+        exposure_active=True,
+    )
+
+    ctrl = _make_controller(tmp_path, ekos_adapter=ekos)
+    ctrl.session.state = ClawState.READY
+
+    result = ctrl.camera_keepalive()
+    assert "Ekos sequence active" in result.message
+    ctrl.camera.heartbeat.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # ekos_output_dir config setting
 # ---------------------------------------------------------------------------
@@ -1275,7 +1300,46 @@ def test_confirm_ekos_paused_stays_requested_when_recent_activity(tmp_path: Path
     assert ctrl._intervention_window == InterventionWindowState.REQUESTED
 
 
-def test_canonical_state_unknown_when_window_open_but_ekos_running(tmp_path: Path) -> None:
+def test_confirm_ekos_paused_stays_requested_when_queued_mount_activity(tmp_path: Path) -> None:
+    """confirm_ekos_paused() must drain observation queues before the settle check.
+
+    Finding 2 (phase3_check_round1): the background mount-observation loop queues
+    events that are normally drained by _check_conflicts().  If
+    confirm_ekos_paused() does not drain those queues itself, a queued
+    MOUNT_SLEW_STARTED is invisible to _last_significant_activity_at and the
+    intervention window can open while device activity is still unsettled
+    (spec line 398: activity must settle before the semaphore is open).
+    """
+    from kepler_node.agent.absolute_state import EkosRuntimeState, InterventionWindowState, NormalizedEkosSnapshot
+    from kepler_node.agent.interfaces import DeviceActivityEvent, DeviceActivityEventType
+    from kepler_node.agent.session import ClawState
+
+    ekos = MagicMock()
+    ekos.pause.return_value = True
+    ekos.status.return_value = NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.PAUSED)
+    ekos.observe.return_value = []
+
+    ctrl = _make_controller(tmp_path, ekos_adapter=ekos)
+    ctrl.session.state = ClawState.CAPTURE
+    ctrl.pause()
+
+    # _last_significant_activity_at is None — no events have been drained yet.
+    assert ctrl._last_significant_activity_at is None
+
+    # Simulate a recent MOUNT_SLEW_STARTED queued by the background loop
+    # but not yet consumed by _check_conflicts().
+    queued_event = DeviceActivityEvent(
+        event_type=DeviceActivityEventType.MOUNT_SLEW_STARTED,
+        observed_at=datetime.now(UTC),
+    )
+    with patch.object(ctrl.mount, "activity_events", return_value=[queued_event]):
+        opened = ctrl.confirm_ekos_paused()
+
+    # The drain inside confirm_ekos_paused() must have consumed the event,
+    # updated _last_significant_activity_at to recent, and blocked the window.
+    assert opened is False
+    assert ctrl._intervention_window == InterventionWindowState.REQUESTED
+    assert ctrl._last_significant_activity_at is not None
     """canonical_state() must return UNKNOWN active_owner when window=OPEN but Ekos=RUNNING.
 
     Spec lines 446-447: if the broker looks healthy but live device activity
@@ -1322,3 +1386,505 @@ def test_pause_on_conflict_calls_ekos_pause(tmp_path: Path) -> None:
 
     ekos.pause.assert_called_once()
     assert ctrl._intervention_window == InterventionWindowState.REQUESTED
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: broker freshness and device_path_available in canonical_state()
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_state_stale_broker_snapshot_degrades_to_unknown(tmp_path: Path) -> None:
+    """canonical_state() must degrade broker_state to UNKNOWN when snapshot is stale.
+
+    Phase 3: if the broker snapshot is older than its freshness TTL, the
+    synthesized canonical state must treat the broker as UNKNOWN rather than
+    propagating an unreliable READY value.
+    """
+    from datetime import timedelta
+
+    from kepler_node.agent.absolute_state import BrokerRuntimeState
+    from kepler_node.agent.broker import BrokerSnapshot, StubBrokerBackend
+
+    class _StaleBrokerBackend(StubBrokerBackend):
+        def snapshot(self) -> BrokerSnapshot:
+            return BrokerSnapshot(
+                broker_state=BrokerRuntimeState.READY,
+                device_path_available=True,
+                confirmed_at=datetime.now(UTC) - timedelta(seconds=120),
+                freshness_ttl_seconds=60.0,  # 120s old > 60s TTL → stale
+            )
+
+    ctrl = _make_controller(tmp_path)
+    ctrl.broker = _StaleBrokerBackend()
+    state = ctrl.canonical_state()
+
+    assert state.broker_state == BrokerRuntimeState.UNKNOWN, (
+        "Stale broker snapshot must degrade to UNKNOWN in canonical synthesis"
+    )
+
+
+def test_canonical_state_device_path_unavailable_degrades_broker(tmp_path: Path) -> None:
+    """canonical_state() must report DEGRADED when broker is READY but device path is unavailable.
+
+    Phase 3: device_path_available=False means the INDI path is not accepting
+    connections even though the broker process reports READY.  The canonical
+    synthesis must treat this as DEGRADED so intervention policy does not proceed
+    on a broken device path.
+    """
+    from kepler_node.agent.absolute_state import BrokerRuntimeState
+    from kepler_node.agent.broker import BrokerSnapshot, StubBrokerBackend
+
+    class _NoDeviceBrokerBackend(StubBrokerBackend):
+        def snapshot(self) -> BrokerSnapshot:
+            return BrokerSnapshot(
+                broker_state=BrokerRuntimeState.READY,
+                device_path_available=False,  # path not accepting connections
+            )
+
+    ctrl = _make_controller(tmp_path)
+    ctrl.broker = _NoDeviceBrokerBackend()
+    state = ctrl.canonical_state()
+
+    assert state.broker_state == BrokerRuntimeState.DEGRADED, (
+        "READY broker with device_path_available=False must synthesize as DEGRADED"
+    )
+
+
+def test_canonical_state_ready_broker_with_device_path_stays_ready(tmp_path: Path) -> None:
+    """canonical_state() must preserve READY when broker is healthy and device path available."""
+    from kepler_node.agent.absolute_state import BrokerRuntimeState
+    from kepler_node.agent.broker import BrokerSnapshot, StubBrokerBackend
+
+    class _HealthyBrokerBackend(StubBrokerBackend):
+        def snapshot(self) -> BrokerSnapshot:
+            return BrokerSnapshot(
+                broker_state=BrokerRuntimeState.READY,
+                device_path_available=True,
+            )
+
+    ctrl = _make_controller(tmp_path)
+    ctrl.broker = _HealthyBrokerBackend()
+    state = ctrl.canonical_state()
+
+    assert state.broker_state == BrokerRuntimeState.READY, (
+        "Healthy READY broker with device_path_available=True must stay READY"
+    )
+
+
+def test_broker_snapshot_is_stale_after_ttl() -> None:
+    """BrokerSnapshot.is_stale must return True when older than freshness_ttl_seconds."""
+    from datetime import timedelta
+
+    from kepler_node.agent.broker import BrokerSnapshot
+
+    stale = BrokerSnapshot(
+        confirmed_at=datetime.now(UTC) - timedelta(seconds=120),
+        freshness_ttl_seconds=60.0,
+    )
+    assert stale.is_stale is True
+
+
+def test_broker_snapshot_fresh_within_ttl() -> None:
+    """BrokerSnapshot.is_stale must return False for a recently taken snapshot."""
+    from kepler_node.agent.broker import BrokerSnapshot
+
+    fresh = BrokerSnapshot(freshness_ttl_seconds=60.0)  # confirmed_at = now
+    assert fresh.is_stale is False
+
+
+def test_canonical_state_intervention_not_safe_with_degraded_broker(tmp_path: Path) -> None:
+    """is_safe_for_kepler_intervention() must return False when broker is DEGRADED.
+
+    Accepting a device path while the broker is DEGRADED would risk conflicting
+    with a partially available INDI driver.
+    """
+    from kepler_node.agent.absolute_state import (
+        ActiveOwner,
+        BrokerRuntimeState,
+        CanonicalAbsoluteState,
+        EkosRuntimeState,
+        InterventionWindowState,
+    )
+
+    not_safe = CanonicalAbsoluteState(
+        active_owner=ActiveOwner.KEPLER,
+        ekos_state=EkosRuntimeState.PAUSED,
+        broker_state=BrokerRuntimeState.DEGRADED,  # not READY → not safe
+        intervention_window=InterventionWindowState.OPEN,
+        control_locked=True,
+    )
+    assert not_safe.is_safe_for_kepler_intervention() is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 round 2: Finding 1 — canonical_state() gates confirm_ekos_paused/resume
+# ---------------------------------------------------------------------------
+
+
+def test_confirm_ekos_paused_stays_requested_when_broker_unknown(tmp_path: Path) -> None:
+    """confirm_ekos_paused() must leave window REQUESTED when broker is UNKNOWN.
+
+    Finding 1 (phase3_check_round1): confirm_ekos_paused() must route through
+    canonical_state() so broker freshness is part of the pause-confirmation
+    decision.  An UNKNOWN broker means the device path cannot be verified.
+    """
+    from datetime import timedelta
+
+    from kepler_node.agent.absolute_state import EkosRuntimeState, InterventionWindowState, NormalizedEkosSnapshot
+    from kepler_node.agent.broker import BrokerSnapshot, BrokerRuntimeState, StubBrokerBackend
+    from kepler_node.agent.session import ClawState
+
+    ekos = MagicMock()
+    ekos.pause.return_value = True
+    ekos.status.return_value = NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.PAUSED)
+
+    class _StaleBrokerBackend(StubBrokerBackend):
+        def snapshot(self) -> BrokerSnapshot:
+            return BrokerSnapshot(
+                broker_state=BrokerRuntimeState.READY,
+                device_path_available=True,
+                confirmed_at=datetime.now(UTC) - timedelta(seconds=120),
+                freshness_ttl_seconds=60.0,
+            )
+
+    ctrl = _make_controller(tmp_path, ekos_adapter=ekos)
+    ctrl.broker = _StaleBrokerBackend()
+    ctrl.session.state = ClawState.CAPTURE
+    ctrl.pause()
+
+    opened = ctrl.confirm_ekos_paused()
+    assert opened is False, (
+        "confirm_ekos_paused() must not open the window when broker is UNKNOWN"
+    )
+    assert ctrl._intervention_window == InterventionWindowState.REQUESTED
+
+
+def test_resume_blocks_when_broker_unknown(tmp_path: Path) -> None:
+    """resume() must stay PAUSED when the canonical broker state is UNKNOWN.
+
+    Finding 1 (phase3_check_round1): resume() must route through canonical_state()
+    so broker state is checked before handing back the device path.  An UNKNOWN
+    broker means we cannot verify that the INDI path is safe to return to Ekos.
+    """
+    from datetime import timedelta
+
+    from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
+    from kepler_node.agent.broker import BrokerSnapshot, BrokerRuntimeState, StubBrokerBackend
+    from kepler_node.agent.session import ClawState, WorkflowIntent
+
+    ekos = MagicMock()
+    ekos.pause.return_value = True
+    # Ekos reports PAUSED (would normally allow resume), but broker is stale/UNKNOWN.
+    ekos.status.return_value = NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.PAUSED)
+
+    class _StaleBrokerBackend(StubBrokerBackend):
+        def snapshot(self) -> BrokerSnapshot:
+            return BrokerSnapshot(
+                broker_state=BrokerRuntimeState.READY,
+                device_path_available=True,
+                confirmed_at=datetime.now(UTC) - timedelta(seconds=120),
+                freshness_ttl_seconds=60.0,
+            )
+
+    ctrl = _make_controller(tmp_path, ekos_adapter=ekos)
+    ctrl.broker = _StaleBrokerBackend()
+    ctrl.session.state = ClawState.CAPTURE
+    ctrl.session.pause(
+        pause_reason="test_pause",
+        resume_state=ClawState.CAPTURE,
+        workflow_intent=WorkflowIntent.CAPTURE,
+        operator_action_required="Resolve issue",
+    )
+
+    result = ctrl.resume()
+    assert result.next_state == ClawState.PAUSED, (
+        "resume() must stay PAUSED when canonical broker state is UNKNOWN"
+    )
+    assert ctrl.session.state == ClawState.PAUSED
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 round 2: Finding 3 — external mount slew detected by poll_activity()
+# ---------------------------------------------------------------------------
+
+
+def test_external_mount_slew_reaches_check_conflicts_and_pauses_session(tmp_path: Path) -> None:
+    """An externally-initiated mount slew must trigger _check_conflicts() pause.
+
+    Finding 3 (phase3_check_round1): poll_activity() must detect external mount
+    motion (when no Kepler slew is pending) and emit MOUNT_SLEW_STARTED with
+    authored_by='external'.  _check_conflicts() must then detect this as a
+    conflict (no matching authored record) and pause the session.
+    """
+    from kepler_node.agent.session import ClawState
+    from kepler_node.mount.indi import INDIMountBackend
+
+    ctrl = _make_controller(tmp_path)
+    ctrl.session.state = ClawState.CAPTURE
+    ctrl.session.control_locked = True
+
+    # Replace mount with a real INDIMountBackend so poll_activity() runs.
+    backend = INDIMountBackend()
+    ctrl.mount = backend
+
+    # No Kepler-authored slew pending.  Mock INDI to report mount slewing.
+    slewing_response = MagicMock()
+    slewing_response.stdout = "PMC Eight.TELESCOPE_SLEWING.SLEWING=On"
+    slewing_response.stderr = ""
+    slewing_response.returncode = 0
+
+    with patch("subprocess.run", return_value=slewing_response):
+        detected = ctrl.check_and_handle_conflicts()
+
+    assert detected is True, (
+        "An external mount slew must be detected as a conflict when control is locked"
+    )
+    assert ctrl.session.state == ClawState.PAUSED, (
+        "Session must be paused when an external mount slew conflict is detected"
+    )
+
+
+def test_poll_activity_emits_external_slew_event_when_no_kepler_slew_pending(tmp_path: Path) -> None:
+    """poll_activity() must emit MOUNT_SLEW_STARTED with authored_by='external' for external motion.
+
+    Finding 3 (phase3_check_round1): when no Kepler slew is pending and INDI
+    reports the mount is slewing, poll_activity() must queue an event so the
+    conflict-detection path can react.
+    """
+    import subprocess
+
+    from kepler_node.agent.interfaces import DeviceActivityEventType
+    from kepler_node.mount.indi import INDIMountBackend
+
+    backend = INDIMountBackend()
+    assert backend._slewing_to is None  # no Kepler slew pending
+
+    slewing_response = MagicMock(spec=subprocess.CompletedProcess)
+    slewing_response.stdout = "PMC Eight.TELESCOPE_SLEWING.SLEWING=On"
+    slewing_response.stderr = ""
+    slewing_response.returncode = 0
+
+    with patch("subprocess.run", return_value=slewing_response):
+        backend.poll_activity()
+
+    events = list(backend.activity_events())
+    assert len(events) == 1
+    assert events[0].event_type == DeviceActivityEventType.MOUNT_SLEW_STARTED
+    assert events[0].details.get("authored_by") == "external"
+
+
+def test_poll_activity_does_not_repeat_external_slew_event_while_ongoing(tmp_path: Path) -> None:
+    """poll_activity() must not emit duplicate external slew events while the same slew continues."""
+    import subprocess
+
+    from kepler_node.mount.indi import INDIMountBackend
+
+    backend = INDIMountBackend()
+
+    slewing_response = MagicMock(spec=subprocess.CompletedProcess)
+    slewing_response.stdout = "PMC Eight.TELESCOPE_SLEWING.SLEWING=On"
+    slewing_response.stderr = ""
+    slewing_response.returncode = 0
+
+    with patch("subprocess.run", return_value=slewing_response):
+        backend.poll_activity()
+        backend.poll_activity()  # second call while still slewing
+
+    events = list(backend.activity_events())
+    assert len(events) == 1, (
+        "poll_activity() must not emit duplicate events for the same ongoing external slew"
+    )
+
+
+def test_poll_activity_clears_external_slew_flag_when_slew_stops(tmp_path: Path) -> None:
+    """poll_activity() must clear external-slew state when INDI reports no longer slewing."""
+    import subprocess
+
+    from kepler_node.agent.interfaces import DeviceActivityEventType
+    from kepler_node.mount.indi import INDIMountBackend
+
+    backend = INDIMountBackend()
+
+    slewing = MagicMock(spec=subprocess.CompletedProcess)
+    slewing.stdout = "PMC Eight.TELESCOPE_SLEWING.SLEWING=On"
+    slewing.stderr = ""
+    slewing.returncode = 0
+
+    not_slewing = MagicMock(spec=subprocess.CompletedProcess)
+    not_slewing.stdout = "PMC Eight.TELESCOPE_SLEWING.SLEWING=Off"
+    not_slewing.stderr = ""
+    not_slewing.returncode = 0
+
+    with patch("subprocess.run", return_value=slewing):
+        backend.poll_activity()
+    list(backend.activity_events())  # drain
+
+    with patch("subprocess.run", return_value=not_slewing):
+        backend.poll_activity()
+
+    # After slew stops, another slew start should be emittable again.
+    with patch("subprocess.run", return_value=slewing):
+        backend.poll_activity()
+
+    events = list(backend.activity_events())
+    assert len(events) == 1
+    assert events[0].event_type == DeviceActivityEventType.MOUNT_SLEW_STARTED
+    assert events[0].details.get("authored_by") == "external"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 round-3 fixes
+# ---------------------------------------------------------------------------
+
+
+def test_observe_landed_frame_no_ingest_after_terminal_completed(tmp_path: Path) -> None:
+    """observe_landed_frame must not persist frames when the session is COMPLETED.
+
+    session_id remains set until acknowledge_complete() is called, but the
+    state machine is already in a terminal state; new frames must not be
+    appended to the completed session's record.
+    """
+    from kepler_node.imaging.frame_quality import FrameQualitySession
+    from kepler_node.agent.session import ClawState
+
+    ctrl = _make_controller(tmp_path)
+    ctrl.session.state = ClawState.COMPLETED  # terminal — session_id still "sess-test"
+
+    frame = tmp_path / "stray.fits"
+    frame.touch()
+    qr = _make_quality_result("pass")
+    fqs = FrameQualitySession()
+
+    ctrl.observe_landed_frame(frame, qr, fqs)
+
+    records, _ = ctrl.store.list_frames("sess-test")
+    assert len(records) == 0, (
+        "No FrameRecord should be written when the session is in a terminal state"
+    )
+
+
+def test_observe_landed_frame_no_ingest_after_terminal_failed(tmp_path: Path) -> None:
+    """observe_landed_frame must not persist frames when the session is FAILED."""
+    from kepler_node.imaging.frame_quality import FrameQualitySession
+    from kepler_node.agent.session import ClawState
+
+    ctrl = _make_controller(tmp_path)
+    ctrl.session.state = ClawState.FAILED
+
+    frame = tmp_path / "stray_fail.fits"
+    frame.touch()
+    qr = _make_quality_result("pass")
+    fqs = FrameQualitySession()
+
+    ctrl.observe_landed_frame(frame, qr, fqs)
+
+    records, _ = ctrl.store.list_frames("sess-test")
+    assert len(records) == 0, (
+        "No FrameRecord should be written when the session is in FAILED state"
+    )
+
+
+def test_frame_watcher_loop_resets_quality_session_on_session_change(tmp_path: Path) -> None:
+    """_frame_watcher_loop resets rolling quality state when session_id changes.
+
+    When the managed session_id transitions, a fresh FrameQualitySession must
+    be created so the new session does not inherit quality history from the
+    previous one.
+    """
+    import asyncio
+
+    from kepler_node.api.app import _frame_watcher_loop
+    from kepler_node.imaging.frame_quality import FrameQualitySession
+    from kepler_node.imaging.protocols import QualityCheckResult, QualityClassification
+
+    ctrl = _make_controller(tmp_path)
+    watch_dir = tmp_path / "ekos_out_reset"
+    watch_dir.mkdir()
+
+    sessions_seen: list[FrameQualitySession] = []
+
+    def _qr() -> QualityCheckResult:
+        return QualityCheckResult(
+            overall=QualityClassification.PASS,
+            checks={"focus": QualityClassification.PASS},
+            metrics={"hfr_mean": 2.0, "hot_pixel_count": 0.0, "star_count": 10.0},
+        )
+
+    class _SessionChangeWatcher:
+        def __init__(self, directory, session=None, *, poll_interval_seconds=2.0, **kw):
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def set_session(self, session: FrameQualitySession | None) -> None:
+            if session is not None:
+                sessions_seen.append(session)
+
+        async def watch(self):
+            # Frame 1 — initial session_id
+            frame1 = tmp_path / "f1.fits"
+            frame1.touch()
+            yield frame1, _qr()
+
+            # Simulate session change
+            ctrl.session.session_id = "sess-new"
+
+            # Frame 2 — should trigger quality_session reset in the loop
+            frame2 = tmp_path / "f2.fits"
+            frame2.touch()
+            yield frame2, _qr()
+
+            await asyncio.sleep(10)
+
+    async def _run() -> None:
+        with patch("kepler_node.imaging.watcher.FrameWatcher", _SessionChangeWatcher):
+            task = asyncio.create_task(_frame_watcher_loop(ctrl, watch_dir))
+            await asyncio.sleep(0.2)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(_run())
+
+    assert len(sessions_seen) >= 1, (
+        "set_session() should have been called when session_id changed"
+    )
+    # The first post-switch frame must have been re-added to the new session so
+    # observe_landed_frame is called with frame_count >= 1, not 0.
+    assert sessions_seen[0].frame_count >= 1, (
+        "First post-switch frame must be attributed to the new quality session "
+        f"(frame_count was {sessions_seen[0].frame_count})"
+    )
+
+
+def test_mount_observation_loop_polls_mount_activity(tmp_path: Path) -> None:
+    """_mount_observation_loop must call poll_mount_observation() on each tick."""
+    import asyncio
+
+    from kepler_node.api.app import _mount_observation_loop
+
+    ctrl = _make_controller(tmp_path)
+    call_count: list[int] = [0]
+
+    def _counting_poll() -> None:
+        call_count[0] += 1
+
+    async def _run() -> None:
+        with patch.object(ctrl, "poll_mount_observation", side_effect=_counting_poll):
+            with patch("kepler_node.api.app._MOUNT_OBSERVATION_INTERVAL_SECONDS", 0.02):
+                task = asyncio.create_task(_mount_observation_loop(ctrl))
+                await asyncio.sleep(0.12)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    asyncio.run(_run())
+
+    assert call_count[0] >= 3, (
+        f"Expected poll_mount_observation to be called ≥3 times in 120 ms, got {call_count[0]}"
+    )
