@@ -10,7 +10,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from kepler_node.agent.absolute_state import (
+    ActiveOwner,
+    BrokerRuntimeState,
+    CanonicalAbsoluteState,
+    EkosRuntimeState,
+    InterventionWindowState,
+    NormalizedEkosSnapshot,
+)
 from kepler_node.agent.authorship import AuthorshipTracker
+from kepler_node.agent.broker import BrokerBackend, BrokerSnapshot, StubBrokerBackend
 from kepler_node.agent.ekos import EkosAdapterProtocol, StubEkosAdapter
 from kepler_node.agent.interfaces import (
     DeviceActivityEvent,
@@ -62,6 +71,17 @@ _FRAME_SUSPECT_FAILURES = {
     SolveFailureCategory.BAD_INPUT_FRAME,
 }
 
+# Device-activity event types that count toward the "settled activity" check
+# in confirm_ekos_paused() (spec line 398). Read-only observation events
+# (temperature readings, focus position changes) are intentionally excluded.
+_SIGNIFICANT_ACTIVITY_TYPES: frozenset[DeviceActivityEventType] = frozenset({
+    DeviceActivityEventType.MOUNT_SLEW_STARTED,
+    DeviceActivityEventType.MOUNT_SLEW_COMPLETED,
+    DeviceActivityEventType.MOUNT_SYNC_APPLIED,
+    DeviceActivityEventType.CAPTURE_STARTED,
+    DeviceActivityEventType.CAPTURE_COMPLETED,
+})
+
 
 class TransitionResult(BaseModel):
     """Outcome of a single state-machine transition."""
@@ -99,6 +119,11 @@ class ClawController:
     SETTLE_AFTER_SLEW_SECONDS = 5.0
     SETTLE_AFTER_CORRECTION_SECONDS = 2.5
 
+    # Minimum quiet period before declaring device activity "settled" (spec line 398).
+    # If significant activity was observed more recently than this, the intervention
+    # window will not be opened even if Ekos reports paused.
+    ACTIVITY_SETTLE_SECONDS = 10.0
+
     @staticmethod
     def _camera_operator_blocker(exc: Exception) -> ReadinessCondition | None:
         msg = str(exc)
@@ -135,6 +160,7 @@ class ClawController:
         verification_dir: Path,
         test_exposure_seconds: float = 5.0,
         ekos_adapter: EkosAdapterProtocol | None = None,
+        broker_backend: BrokerBackend | None = None,
     ) -> None:
         self.session = session
         self.node = node_backend
@@ -146,10 +172,17 @@ class ClawController:
         self.verification_dir = verification_dir
         self.test_exposure_seconds = test_exposure_seconds
         self.ekos: EkosAdapterProtocol = ekos_adapter or StubEkosAdapter()
+        self.broker: BrokerBackend = broker_backend or StubBrokerBackend()
         self._event_sequence: int = 0
         self._node_event_sequence: int = 0
         self._node_events: list[EventRecord] = []
         self._session_started_at: datetime = datetime.now(UTC)
+        # Intervention window state — tracks the phase of the current intervention
+        self._intervention_window: InterventionWindowState = InterventionWindowState.CLOSED
+        # Timestamp of the most recent significant device-activity event seen on any feed.
+        # Used by confirm_ekos_paused() to enforce the "activity settled" check before
+        # opening the intervention window (spec §Control Handoff Protocol, line 398).
+        self._last_significant_activity_at: datetime | None = None
         # Active equipment profile set by discover() or /equipment/profiles/{id}/select
         self.active_equipment_profile: EquipmentProfile | None = None
         # Staged target metadata (label and source tracked separately from session RA/Dec)
@@ -161,6 +194,69 @@ class ClawController:
     def node_events(self) -> list[EventRecord]:
         """In-memory buffer of node-scoped pre-session diagnostic events."""
         return self._node_events
+
+    def canonical_state(self) -> CanonicalAbsoluteState:
+        """Synthesize and return the current canonical absolute state.
+
+        This is the supervisory source of truth for intervention and ownership
+        decisions.  It synthesizes broker state, Ekos session state, and the
+        current intervention window into a single normalized model.
+
+        Conservative precedence rule (spec lines 439-448): when sources
+        disagree, the most conservative interpretation wins.
+        """
+        # --- broker state ---
+        try:
+            broker_snap: BrokerSnapshot = self.broker.snapshot()
+            broker_state = broker_snap.broker_state
+        except Exception:
+            broker_state = BrokerRuntimeState.UNKNOWN
+
+        # --- Ekos state ---
+        try:
+            ekos_snap: NormalizedEkosSnapshot = self.ekos.status()
+            ekos_state = ekos_snap.ekos_state if not ekos_snap.is_stale else EkosRuntimeState.UNKNOWN
+        except Exception:
+            ekos_state = EkosRuntimeState.UNKNOWN
+
+        # --- active_owner synthesis (conservative) ---
+        # Ownership rules (spec lines 444-448):
+        # - If Kepler's intervention window is OPEN and Ekos is confirmed PAUSED:
+        #   active_owner = KEPLER
+        # - If intervention window is CLOSED and Ekos is RUNNING:
+        #   active_owner = EKOS
+        # - If pause was REQUESTED but not confirmed, or any signal is unknown:
+        #   active_owner = UNKNOWN
+        # - No managed session: active_owner = NONE
+        iw = self._intervention_window
+        control_locked = self.session.control_locked
+
+        if not control_locked:
+            active_owner = ActiveOwner.NONE
+        elif iw == InterventionWindowState.OPEN and ekos_state == EkosRuntimeState.PAUSED:
+            active_owner = ActiveOwner.KEPLER
+        elif iw == InterventionWindowState.OPEN and ekos_state != EkosRuntimeState.PAUSED:
+            # Window is open (we expect to own the path) but Ekos reports a contradictory
+            # or unavailable state — conservative unknown (spec lines 446-447).
+            active_owner = ActiveOwner.UNKNOWN
+        elif iw == InterventionWindowState.CLOSED and ekos_state == EkosRuntimeState.RUNNING:
+            active_owner = ActiveOwner.EKOS
+        elif ekos_state in {EkosRuntimeState.UNKNOWN, EkosRuntimeState.UNAVAILABLE} or iw == InterventionWindowState.UNKNOWN:
+            # Cannot determine ownership — conservative unknown
+            active_owner = ActiveOwner.UNKNOWN
+        elif iw in {InterventionWindowState.REQUESTED, InterventionWindowState.RELEASING}:
+            # Transitional states: pause requested but not confirmed, or releasing
+            active_owner = ActiveOwner.UNKNOWN
+        else:
+            active_owner = ActiveOwner.EKOS
+
+        return CanonicalAbsoluteState(
+            active_owner=active_owner,
+            ekos_state=ekos_state,
+            broker_state=broker_state,
+            intervention_window=iw,
+            control_locked=control_locked,
+        )
 
     # ------------------------------------------------------------------ #
     # Pre-session: boot -> discover -> connect -> ready                    #
@@ -1200,6 +1296,9 @@ class ClawController:
                 ),
             )
             ok = self.ekos.pause()
+            # Mark window as REQUESTED: Ekos pause was sent but not yet confirmed.
+            # active_owner stays UNKNOWN until confirm_ekos_paused() is called.
+            self._intervention_window = InterventionWindowState.REQUESTED
             self._emit_event(
                 EventType.CORRECTIVE_ACTION,
                 f"guard: rolling trend → pausing for {pause_reason}",
@@ -1361,6 +1460,19 @@ class ClawController:
         resume_state, restores workflow_intent, and clears resume_context.
         The session remains control_locked if it was before; this is not a
         release-control operation (use session.release_control() for that).
+
+        Explicit pause-acquire-act-release-resume handoff semantics
+        (spec §Control Handoff Protocol, lines 394-408):
+
+        1. Before allowing resume, verify that Ekos is actually paused.
+           If the Ekos snapshot is unknown, stale, or contradictory, the
+           active owner stays UNKNOWN and the session stays PAUSED rather
+           than continuing automation on a bad signal.
+        2. Mark the intervention window as RELEASING before requesting Ekos
+           resume so the canonical state reflects the transition.
+        3. On Ekos resume request failure: window stays REQUESTED (pause not
+           confirmed), active_owner stays UNKNOWN, session stays PAUSED.
+        4. On success: window is CLOSED, active_owner returns to EKOS.
         """
         prev = self.session.state
         if self.session.state != ClawState.PAUSED:
@@ -1373,11 +1485,60 @@ class ClawController:
                 prev, ClawState.FAILED, "resume called with no resume_context"
             )
 
+        # Check Ekos pause confirmation before releasing ownership.
+        # Spec lines 402-408: Kepler must not assume it owns the path merely
+        # because it requested a pause.  If confirmation is missing, stale, or
+        # contradictory, treat ownership as unknown and stay PAUSED.
+        try:
+            ekos_snap = self.ekos.status()
+            # Block if: state is unknown/stale (is_unknown), Ekos is actively
+            # RUNNING (contradictory to a paused posture), or Ekos is UNAVAILABLE
+            # (cannot verify pause confirmation).  IDLE is allowed through — it
+            # can legitimately mean the sequence finished before the resume request.
+            ekos_blocks_resume = (
+                ekos_snap.is_unknown
+                or ekos_snap.is_running
+                or ekos_snap.ekos_state == EkosRuntimeState.UNAVAILABLE
+            )
+            if ekos_blocks_resume:
+                self._emit_event(
+                    EventType.WARNING,
+                    "resume: Ekos snapshot is unknown or stale; staying paused (active_owner=unknown)",
+                    EventSeverity.WARNING,
+                    details={"ekos_state": str(ekos_snap.ekos_state), "is_stale": str(ekos_snap.is_stale)},
+                )
+                # Window stays REQUESTED; ownership stays UNKNOWN.
+                self._intervention_window = InterventionWindowState.REQUESTED
+                return self._make_transition(
+                    prev,
+                    ClawState.PAUSED,
+                    "resume blocked: Ekos state unknown or stale; ownership unclear",
+                    details={"pause_reason": ctx.pause_reason, "active_owner": ActiveOwner.UNKNOWN},
+                )
+        except Exception as exc:
+            self._emit_event(
+                EventType.WARNING,
+                f"resume: Ekos status query failed ({exc}); staying paused",
+                EventSeverity.WARNING,
+            )
+            self._intervention_window = InterventionWindowState.REQUESTED
+            return self._make_transition(
+                prev,
+                ClawState.PAUSED,
+                "resume blocked: Ekos status unavailable; ownership unclear",
+                details={"pause_reason": ctx.pause_reason, "active_owner": ActiveOwner.UNKNOWN},
+            )
+
         resume_state = ctx.resume_state
         resume_intent = ctx.workflow_intent
 
+        # Mark window as RELEASING: Kepler is handing back ownership.
+        self._intervention_window = InterventionWindowState.RELEASING
+
         ok = self.ekos.resume()
         if not ok:
+            # Resume failed — window stays in RELEASING (not CLOSED), ownership stays UNKNOWN.
+            self._intervention_window = InterventionWindowState.REQUESTED
             self._emit_event(
                 EventType.WARNING,
                 "resume: ekos.resume() failed; session stays paused",
@@ -1390,6 +1551,8 @@ class ClawController:
                 details={"pause_reason": ctx.pause_reason, "ekos_resume_ok": "False"},
             )
 
+        # Resume succeeded — close the intervention window and hand back to Ekos.
+        self._intervention_window = InterventionWindowState.CLOSED
         self.session.state = resume_state
         self.session.workflow_intent = resume_intent
         self.session.resume_context = None
@@ -1397,7 +1560,11 @@ class ClawController:
             prev,
             resume_state,
             f"resumed from paused to {resume_state}",
-            details={"pause_reason": ctx.pause_reason, "resume_state": resume_state},
+            details={
+                "pause_reason": ctx.pause_reason,
+                "resume_state": resume_state,
+                "active_owner": ActiveOwner.EKOS,
+            },
         )
 
     def check_and_handle_conflicts(self) -> bool:
@@ -1811,16 +1978,22 @@ class ClawController:
             pass
 
         for event in self.mount.activity_events():
+            if event.event_type in _SIGNIFICANT_ACTIVITY_TYPES:
+                self._last_significant_activity_at = event.observed_at
             if self.authorship.is_conflict(event, control_locked=True):
                 self._pause_on_conflict("mount", str(event.event_type))
                 return True
 
         for event in self.camera.activity_events():
+            if event.event_type in _SIGNIFICANT_ACTIVITY_TYPES:
+                self._last_significant_activity_at = event.observed_at
             if self.authorship.is_conflict(event, control_locked=True):
                 self._pause_on_conflict("camera", str(event.event_type))
                 return True
 
         for event in self.ekos.observe():
+            if event.event_type in _SIGNIFICANT_ACTIVITY_TYPES:
+                self._last_significant_activity_at = event.observed_at
             if self.authorship.is_conflict(event, control_locked=True):
                 self._pause_on_conflict("ekos", str(event.event_type))
                 return True
@@ -1847,6 +2020,12 @@ class ClawController:
         else:
             resume_state = ClawState.TARGET_ACQUIRED
 
+        # Request Ekos pause and mark the intervention window as REQUESTED.
+        # active_owner becomes UNKNOWN until confirm_ekos_paused() is called.
+        # Spec §Control Handoff Protocol step 2: "Kepler requests that Ekos pause."
+        self.ekos.pause()
+        self._intervention_window = InterventionWindowState.REQUESTED
+
         self.session.pause(
             pause_reason="external_control_conflict",
             resume_state=resume_state,
@@ -1872,6 +2051,7 @@ class ClawController:
         """Operator-requested session stop.  Emits SESSION_OUTCOME and persists."""
         prev = self.session.state
         self.session.stop()
+        self._intervention_window = InterventionWindowState.CLOSED
         try:
             self._persist_terminal_outcome("session stopped by operator")
         finally:
@@ -1879,7 +2059,13 @@ class ClawController:
         return self._make_transition(prev, ClawState.COMPLETED, "session stopped by operator")
 
     def pause(self) -> TransitionResult:
-        """Pause the active managed session through the canonical transition path."""
+        """Pause the active managed session through the canonical transition path.
+
+        Sends an Ekos pause request and marks the intervention window as
+        REQUESTED.  The window transitions to OPEN when the canonical state
+        confirms Ekos is actually paused (e.g. via ``canonical_state()``).
+        Until that confirmation is received, ``active_owner`` is ``unknown``.
+        """
         if self.session.state == ClawState.PAUSED:
             return TransitionResult(
                 previous_state=ClawState.PAUSED,
@@ -1904,6 +2090,11 @@ class ClawController:
 
         workflow_intent = self.session.workflow_intent or WorkflowIntent.CALIBRATION
         prev = self.session.state
+
+        # Request Ekos pause and mark window as REQUESTED (not yet confirmed).
+        self.ekos.pause()
+        self._intervention_window = InterventionWindowState.REQUESTED
+
         self.session.pause(
             pause_reason="operator pause request",
             resume_state=prev,
@@ -1911,10 +2102,48 @@ class ClawController:
         )
         return self._make_transition(prev, ClawState.PAUSED, "session paused by operator")
 
+    def confirm_ekos_paused(self) -> bool:
+        """Check Ekos pause confirmation and open the intervention window if confirmed.
+
+        Implements the explicit pause-confirmation step from the control
+        handoff protocol (spec §Control Handoff Protocol, steps 2-4):
+
+        1. Verify the Ekos snapshot confirms ``paused`` state and is fresh.
+        2. Verify that significant device activity has settled (no significant
+           event in the last ``ACTIVITY_SETTLE_SECONDS`` seconds).
+        3. If both confirmed: set intervention_window = OPEN and return True.
+        4. If not confirmed (unknown, stale, contradictory, or recent activity):
+           leave window as REQUESTED, active_owner stays UNKNOWN, return False.
+
+        Callers should check this before any bounded remediation or
+        verification work (spec line 399: "Only then may Kepler treat the
+        semaphore as open").
+        """
+        try:
+            snap = self.ekos.status()
+        except Exception:
+            return False
+
+        if not snap.is_paused:
+            # Snapshot is not paused, unknown, or stale — keep REQUESTED.
+            return False
+
+        # Check that device activity has settled (spec line 398).
+        if self._last_significant_activity_at is not None:
+            seconds_since_activity = (
+                datetime.now(UTC) - self._last_significant_activity_at
+            ).total_seconds()
+            if seconds_since_activity < self.ACTIVITY_SETTLE_SECONDS:
+                return False
+
+        self._intervention_window = InterventionWindowState.OPEN
+        return True
+
     def fail(self, *, reason: str = "unrecoverable failure") -> TransitionResult:
         """Transition the session to FAILED.  Emits SESSION_OUTCOME and persists."""
         prev = self.session.state
         self.session.fail()
+        self._intervention_window = InterventionWindowState.CLOSED
         try:
             self._persist_terminal_outcome(f"session failed: {reason}")
         finally:
@@ -1925,6 +2154,7 @@ class ClawController:
         """Release operator control from PAUSED.  Emits SESSION_OUTCOME and persists."""
         prev = self.session.state
         self.session.release_control()
+        self._intervention_window = InterventionWindowState.CLOSED
         try:
             self._persist_terminal_outcome("control released by operator")
         finally:

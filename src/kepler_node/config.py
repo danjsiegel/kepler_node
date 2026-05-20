@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     indiserver_host: str = "localhost"
     indiserver_port: int = 7624
 
+    # INDI broker / semaphore (indiwebmanager)
+    indiwebmanager_host: str = "localhost"
+    indiwebmanager_port: int = 8624
+    indiwebmanager_timeout_seconds: float = 3.0
+
     # Local API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000

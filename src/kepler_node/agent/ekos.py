@@ -8,6 +8,12 @@ can make informed decisions without owning the execution path.
 The DBusEkosAdapter is the concrete v1.1 transport.  The EkosAdapterProtocol
 defines the replaceable boundary so tests and future transports can swap in
 without touching orchestration.
+
+The normalized ``NormalizedEkosSnapshot`` (imported from ``absolute_state``)
+replaces the earlier boolean ``EkosSequenceStatus``.  It carries an explicit
+state enum, freshness metadata, and conservative unknown defaults so the
+supervisory layer can distinguish requested pause from confirmed pause, idle
+from unavailable, and running from stale last-known state.
 """
 
 from __future__ import annotations
@@ -16,52 +22,24 @@ import logging
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
+from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
 from kepler_node.agent.interfaces import DeviceActivityEvent, DeviceActivityEventType
 
 _logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Shared data models
+# Backward-compatibility shim
 # ---------------------------------------------------------------------------
 
 
-class EkosSequenceStatus:
-    """Normalized snapshot of Ekos sequence/capture state.
+class EkosSequenceStatus(NormalizedEkosSnapshot):
+    """Deprecated: use NormalizedEkosSnapshot directly.
 
-    Attributes:
-        active:       True while a capture sequence is executing.
-        paused:       True when the sequence is explicitly paused.
-        job_name:     Current job name or None when idle.
-        frames_done:  Frames completed in the current job (0 when idle).
-        frames_total: Total frames planned for the current job (0 when idle).
-        details:      Provider-specific metadata.
+    Retained as a thin subclass so callers that import or isinstance-check
+    ``EkosSequenceStatus`` continue to work while the codebase migrates to
+    ``NormalizedEkosSnapshot``.
     """
-
-    __slots__ = ("active", "paused", "job_name", "frames_done", "frames_total", "details")
-
-    def __init__(
-        self,
-        *,
-        active: bool = False,
-        paused: bool = False,
-        job_name: str | None = None,
-        frames_done: int = 0,
-        frames_total: int = 0,
-        details: dict[str, str] | None = None,
-    ) -> None:
-        self.active = active
-        self.paused = paused
-        self.job_name = job_name
-        self.frames_done = frames_done
-        self.frames_total = frames_total
-        self.details: dict[str, str] = details or {}
-
-    def __repr__(self) -> str:  # pragma: no cover
-        return (
-            f"EkosSequenceStatus(active={self.active}, paused={self.paused}, "
-            f"job={self.job_name!r}, done={self.frames_done}/{self.frames_total})"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +79,13 @@ class EkosAdapterProtocol(Protocol):
         """
         ...
 
-    def status(self) -> EkosSequenceStatus:
-        """Return a normalized snapshot of the current sequence/capture state."""
+    def status(self) -> NormalizedEkosSnapshot:
+        """Return a normalized snapshot of the current sequence/capture state.
+
+        The adapter must return ``EkosRuntimeState.UNKNOWN`` rather than
+        fabricate certainty when it cannot provide a trustworthy reading
+        (spec lines 237-240).
+        """
         ...
 
     def observe(self) -> list[DeviceActivityEvent]:
@@ -157,8 +140,8 @@ class StubEkosAdapter:
         _logger.info("StubEkosAdapter.request_reverify() called")
         return True
 
-    def status(self) -> EkosSequenceStatus:
-        return EkosSequenceStatus()
+    def status(self) -> NormalizedEkosSnapshot:
+        return NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.IDLE)
 
     def observe(self) -> list[DeviceActivityEvent]:
         return []
@@ -308,17 +291,44 @@ class DBusEkosAdapter:
             _logger.warning("Ekos re-verify request failed: %s", exc)
             return False
 
-    def status(self) -> EkosSequenceStatus:
-        """Return a normalized Ekos sequence status snapshot from DBus."""
+    def status(self) -> NormalizedEkosSnapshot:
+        """Return a normalized Ekos sequence snapshot from DBus.
+
+        Maps raw KStars/Ekos status strings to explicit ``EkosRuntimeState``
+        values so supervisory policy can distinguish running from paused from
+        idle without relying on booleans.  Returns ``EkosRuntimeState.UNKNOWN``
+        on any transport failure rather than fabricating certainty.
+        """
         try:
             iface = self._capture_iface()
             state_str: str = str(iface.getSequenceQueueStatus())  # type: ignore[attr-defined]
-            paused = "pause" in state_str.lower()
-            active = state_str.lower() in {"running", "capturing", "active"}
-            return EkosSequenceStatus(active=active, paused=paused, details={"raw_status": state_str})
+            state_lower = state_str.lower()
+
+            if "pause" in state_lower:
+                ekos_state = EkosRuntimeState.PAUSED
+            elif state_lower in {"running", "capturing", "active"}:
+                ekos_state = EkosRuntimeState.RUNNING
+            elif state_lower == "aborted":
+                ekos_state = EkosRuntimeState.ABORTED
+            elif state_lower in {"idle", "complete", "stopped"}:
+                ekos_state = EkosRuntimeState.IDLE
+            elif state_lower in {"resuming"}:
+                ekos_state = EkosRuntimeState.RESUMING
+            else:
+                ekos_state = EkosRuntimeState.UNKNOWN
+
+            return NormalizedEkosSnapshot(
+                ekos_state=ekos_state,
+                confirmed_at=datetime.now(UTC),
+                details={"raw_status": state_str},
+            )
         except Exception as exc:
             _logger.debug("Ekos status query failed: %s", exc)
-            return EkosSequenceStatus(details={"error": str(exc)})
+            return NormalizedEkosSnapshot(
+                ekos_state=EkosRuntimeState.UNAVAILABLE,
+                confirmed_at=datetime.now(UTC),
+                details={"error": str(exc)},
+            )
 
     # ------------------------------------------------------------------
     # Read-only observation surface

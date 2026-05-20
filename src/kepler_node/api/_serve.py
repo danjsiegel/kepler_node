@@ -19,6 +19,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from kepler_node.agent.authorship import AuthorshipTracker
+from kepler_node.agent.broker import IndiWebManagerBrokerBackend
 from kepler_node.agent.claw import ClawController
 from kepler_node.agent.ekos import DBusEkosAdapter, StubEkosAdapter
 from kepler_node.agent.node_management import LocalNodeManagementBackend
@@ -57,6 +58,11 @@ def make_dev_app() -> FastAPI:
         authorship_tracker=AuthorshipTracker(),
         verification_dir=verification_dir,
         ekos_adapter=DBusEkosAdapter(),
+        broker_backend=IndiWebManagerBrokerBackend(
+            host=settings.indiwebmanager_host,
+            port=settings.indiwebmanager_port,
+            timeout_seconds=settings.indiwebmanager_timeout_seconds,
+        ),
     )
 
     return build_app(controller=controller, ekos_output_dir=settings.ekos_output_dir)

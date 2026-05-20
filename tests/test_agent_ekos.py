@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
 from kepler_node.agent.ekos import (
     DBusEkosAdapter,
     EkosAdapterProtocol,
@@ -67,7 +68,7 @@ def test_stub_request_reverify_returns_true() -> None:
 
 def test_stub_status_returns_inactive() -> None:
     status = StubEkosAdapter().status()
-    assert isinstance(status, EkosSequenceStatus)
+    assert isinstance(status, NormalizedEkosSnapshot)
     assert status.active is False
     assert status.paused is False
 
@@ -187,6 +188,20 @@ def test_dbus_adapter_status_paused() -> None:
     with _dbus_patched(fake_dbus):
         status = adapter.status()
     assert status.paused is True
+
+
+def test_dbus_adapter_status_aborted_maps_to_aborted_state() -> None:
+    """Raw 'Aborted' status must map to EkosRuntimeState.ABORTED, not IDLE.
+
+    Spec line 222 requires aborted to be a distinct normalized state.
+    """
+    fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(capture_status="Aborted")
+    adapter = DBusEkosAdapter(session_bus=bus)
+    with _dbus_patched(fake_dbus):
+        status = adapter.status()
+    assert status.ekos_state == EkosRuntimeState.ABORTED
+    assert status.active is False
+    assert status.paused is False
 
 
 def test_dbus_adapter_poll_focus_queues_event() -> None:
