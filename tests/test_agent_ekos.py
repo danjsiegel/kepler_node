@@ -552,4 +552,3 @@ def test_dbus_adapter_status_sequence_exists_false_idle_empty_queue() -> None:
     assert status.sequence_exists is False, (
         "sequence_exists must be False when IDLE with an empty job queue"
     )
-

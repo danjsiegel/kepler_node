@@ -366,8 +366,12 @@ class DBusEkosAdapter:
 
         # sequence_exists: derive from actual job-queue presence when possible so
         # "idle with a loaded sequence" is represented correctly.
-        if ekos_state in {EkosRuntimeState.RUNNING, EkosRuntimeState.PAUSED,
-                          EkosRuntimeState.RESUMING, EkosRuntimeState.ABORTED}:
+        if ekos_state in {
+            EkosRuntimeState.RUNNING,
+            EkosRuntimeState.PAUSED,
+            EkosRuntimeState.RESUMING,
+            EkosRuntimeState.ABORTED,
+        }:
             # Sequence is definitely loaded and active.
             sequence_exists = True
         elif ekos_state == EkosRuntimeState.IDLE and _job_count_sentinel >= 0:

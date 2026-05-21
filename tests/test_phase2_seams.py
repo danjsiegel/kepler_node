@@ -87,9 +87,7 @@ def test_verification_solve_failure_not_safe(tmp_path: Path) -> None:
 
 
 def test_verification_solve_large_offset_not_safe(tmp_path: Path) -> None:
-    helper = VerificationSolveHelper(
-        _success_solver(residual=20.0), reason="audit"
-    )
+    helper = VerificationSolveHelper(_success_solver(residual=20.0), reason="audit")
     vr = helper.solve_for_verification(tmp_path / "frame.fits")
     assert vr.safe_to_resume is False
     assert "re-center required" in vr.confidence
@@ -216,6 +214,7 @@ class _FakeCamera:
     def capture(self, request: object) -> object:
         from kepler_node.camera.protocols import CaptureResult
         from kepler_node.camera.protocols import CaptureRequest
+
         req: CaptureRequest = request  # type: ignore[assignment]
         path = req.destination_dir / "test_frame.jpg"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +230,9 @@ class _FakeCamera:
 
 class _FakeSolver:
     def solve(self, image_path: Path, **_: object) -> SolveResult:
-        return SolveResult(success=True, solved_ra_hours=1.0, solved_dec_deg=45.0, residual_arcmin=5.0)
+        return SolveResult(
+            success=True, solved_ra_hours=1.0, solved_dec_deg=45.0, residual_arcmin=5.0
+        )
 
 
 def _make_controller(tmp_path: Path, ekos_adapter: object | None = None) -> object:
@@ -757,9 +758,7 @@ def test_frame_watcher_loop_rolling_state_advances_across_frames(tmp_path: Path)
 
     fqs: FrameQualitySession = session_holder["session"]
     assert fqs is not None
-    assert fqs.frame_count == 3, (
-        f"Expected 3 frames in rolling state, got {fqs.frame_count}"
-    )
+    assert fqs.frame_count == 3, f"Expected 3 frames in rolling state, got {fqs.frame_count}"
 
 
 # ---------------------------------------------------------------------------
@@ -1102,7 +1101,11 @@ def test_canonical_state_returns_canonical_absolute_state(tmp_path: Path) -> Non
 
 def test_canonical_state_active_owner_ekos_when_running(tmp_path: Path) -> None:
     """canonical_state() must report EKOS as owner when Ekos is running and window is closed."""
-    from kepler_node.agent.absolute_state import ActiveOwner, EkosRuntimeState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        ActiveOwner,
+        EkosRuntimeState,
+        NormalizedEkosSnapshot,
+    )
 
     ekos = MagicMock()
     ekos.status.return_value = NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.RUNNING)
@@ -1114,7 +1117,11 @@ def test_canonical_state_active_owner_ekos_when_running(tmp_path: Path) -> None:
 
 def test_canonical_state_unknown_when_ekos_unavailable(tmp_path: Path) -> None:
     """canonical_state() must report UNKNOWN owner when Ekos is unavailable."""
-    from kepler_node.agent.absolute_state import ActiveOwner, EkosRuntimeState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        ActiveOwner,
+        EkosRuntimeState,
+        NormalizedEkosSnapshot,
+    )
 
     ekos = MagicMock()
     ekos.status.return_value = NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.UNAVAILABLE)
@@ -1147,7 +1154,11 @@ def test_pause_sets_intervention_window_requested(tmp_path: Path) -> None:
 
 def test_confirm_ekos_paused_opens_window(tmp_path: Path) -> None:
     """confirm_ekos_paused() must open the intervention window when Ekos is confirmed paused."""
-    from kepler_node.agent.absolute_state import EkosRuntimeState, InterventionWindowState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        EkosRuntimeState,
+        InterventionWindowState,
+        NormalizedEkosSnapshot,
+    )
     from kepler_node.agent.session import ClawState
 
     ekos = MagicMock()
@@ -1165,7 +1176,11 @@ def test_confirm_ekos_paused_opens_window(tmp_path: Path) -> None:
 
 def test_confirm_ekos_paused_stays_requested_when_unknown(tmp_path: Path) -> None:
     """confirm_ekos_paused() must leave window REQUESTED when Ekos state is unknown."""
-    from kepler_node.agent.absolute_state import EkosRuntimeState, InterventionWindowState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        EkosRuntimeState,
+        InterventionWindowState,
+        NormalizedEkosSnapshot,
+    )
     from kepler_node.agent.session import ClawState
 
     ekos = MagicMock()
@@ -1219,7 +1234,11 @@ def test_resume_blocks_when_ekos_running(tmp_path: Path) -> None:
     (Ekos reporting RUNNING while we expect it to be paused) must keep
     active_owner as unknown and keep the controller in PAUSED.
     """
-    from kepler_node.agent.absolute_state import ActiveOwner, EkosRuntimeState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        ActiveOwner,
+        EkosRuntimeState,
+        NormalizedEkosSnapshot,
+    )
     from kepler_node.agent.session import ClawState, WorkflowIntent
 
     ekos = MagicMock()
@@ -1249,7 +1268,11 @@ def test_resume_blocks_when_ekos_unavailable(tmp_path: Path) -> None:
     Spec line 407: missing or unavailable pause confirmation must keep
     active_owner unknown and controller in PAUSED.
     """
-    from kepler_node.agent.absolute_state import ActiveOwner, EkosRuntimeState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        ActiveOwner,
+        EkosRuntimeState,
+        NormalizedEkosSnapshot,
+    )
     from kepler_node.agent.session import ClawState, WorkflowIntent
 
     ekos = MagicMock()
@@ -1281,7 +1304,11 @@ def test_confirm_ekos_paused_stays_requested_when_recent_activity(tmp_path: Path
     """
     from datetime import UTC, datetime
 
-    from kepler_node.agent.absolute_state import EkosRuntimeState, InterventionWindowState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        EkosRuntimeState,
+        InterventionWindowState,
+        NormalizedEkosSnapshot,
+    )
     from kepler_node.agent.session import ClawState
 
     ekos = MagicMock()
@@ -1310,7 +1337,11 @@ def test_confirm_ekos_paused_stays_requested_when_queued_mount_activity(tmp_path
     intervention window can open while device activity is still unsettled
     (spec line 398: activity must settle before the semaphore is open).
     """
-    from kepler_node.agent.absolute_state import EkosRuntimeState, InterventionWindowState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        EkosRuntimeState,
+        InterventionWindowState,
+        NormalizedEkosSnapshot,
+    )
     from kepler_node.agent.interfaces import DeviceActivityEvent, DeviceActivityEventType
     from kepler_node.agent.session import ClawState
 
@@ -1365,6 +1396,7 @@ def test_confirm_ekos_paused_stays_requested_when_queued_mount_activity(tmp_path
     assert state.active_owner == ActiveOwner.UNKNOWN
     assert state.ekos_state == EkosRuntimeState.RUNNING
     assert state.intervention_window == InterventionWindowState.OPEN
+
 
 def test_pause_on_conflict_calls_ekos_pause(tmp_path: Path) -> None:
     """_pause_on_conflict() must call ekos.pause() before setting window to REQUESTED.
@@ -1530,7 +1562,11 @@ def test_confirm_ekos_paused_stays_requested_when_broker_unknown(tmp_path: Path)
     """
     from datetime import timedelta
 
-    from kepler_node.agent.absolute_state import EkosRuntimeState, InterventionWindowState, NormalizedEkosSnapshot
+    from kepler_node.agent.absolute_state import (
+        EkosRuntimeState,
+        InterventionWindowState,
+        NormalizedEkosSnapshot,
+    )
     from kepler_node.agent.broker import BrokerSnapshot, BrokerRuntimeState, StubBrokerBackend
     from kepler_node.agent.session import ClawState
 
@@ -1553,9 +1589,7 @@ def test_confirm_ekos_paused_stays_requested_when_broker_unknown(tmp_path: Path)
     ctrl.pause()
 
     opened = ctrl.confirm_ekos_paused()
-    assert opened is False, (
-        "confirm_ekos_paused() must not open the window when broker is UNKNOWN"
-    )
+    assert opened is False, "confirm_ekos_paused() must not open the window when broker is UNKNOWN"
     assert ctrl._intervention_window == InterventionWindowState.REQUESTED
 
 
@@ -1644,7 +1678,9 @@ def test_external_mount_slew_reaches_check_conflicts_and_pauses_session(tmp_path
     )
 
 
-def test_poll_activity_emits_external_slew_event_when_no_kepler_slew_pending(tmp_path: Path) -> None:
+def test_poll_activity_emits_external_slew_event_when_no_kepler_slew_pending(
+    tmp_path: Path,
+) -> None:
     """poll_activity() must emit MOUNT_SLEW_STARTED with authored_by='external' for external motion.
 
     Finding 3 (phase3_check_round1): when no Kepler slew is pending and INDI
@@ -1779,9 +1815,7 @@ def test_observe_landed_frame_no_ingest_after_terminal_failed(tmp_path: Path) ->
     ctrl.observe_landed_frame(frame, qr, fqs)
 
     records, _ = ctrl.store.list_frames("sess-test")
-    assert len(records) == 0, (
-        "No FrameRecord should be written when the session is in FAILED state"
-    )
+    assert len(records) == 0, "No FrameRecord should be written when the session is in FAILED state"
 
 
 def test_frame_watcher_loop_resets_quality_session_on_session_change(tmp_path: Path) -> None:
@@ -1849,9 +1883,7 @@ def test_frame_watcher_loop_resets_quality_session_on_session_change(tmp_path: P
 
     asyncio.run(_run())
 
-    assert len(sessions_seen) >= 1, (
-        "set_session() should have been called when session_id changed"
-    )
+    assert len(sessions_seen) >= 1, "set_session() should have been called when session_id changed"
     # The first post-switch frame must have been re-added to the new session so
     # observe_landed_frame is called with frame_count >= 1, not 0.
     assert sessions_seen[0].frame_count >= 1, (

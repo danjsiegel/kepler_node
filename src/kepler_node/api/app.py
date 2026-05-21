@@ -341,7 +341,9 @@ async def _frame_watcher_loop(controller: ClawController, output_dir: Path) -> N
     from kepler_node.imaging.watcher import FrameWatcher
 
     quality_session = FrameQualitySession()
-    watcher = FrameWatcher(output_dir, session=quality_session, poll_interval_seconds=_WATCHER_POLL_INTERVAL_SECONDS)
+    watcher = FrameWatcher(
+        output_dir, session=quality_session, poll_interval_seconds=_WATCHER_POLL_INTERVAL_SECONDS
+    )
     _logger.info("frame watcher started on %s", output_dir)
     last_session_id: str | None = controller.session.session_id
     try:

@@ -64,9 +64,17 @@ def test_connect_raises_when_remote_control_config_probes_all_fail() -> None:
     backend = _make_backend()
     responses = [
         _proc(stdout="Model                          Port\n---\nFujifilm X-T5  usb:", returncode=0),
-        _proc(stdout="", stderr="/main/settings/capturetarget not found in configuration tree", returncode=1),
+        _proc(
+            stdout="",
+            stderr="/main/settings/capturetarget not found in configuration tree",
+            returncode=1,
+        ),
         _proc(stdout="", stderr="/main/actions/bulb not found in configuration tree", returncode=1),
-        _proc(stdout="", stderr="/main/actions/autofocusdrive not found in configuration tree", returncode=1),
+        _proc(
+            stdout="",
+            stderr="/main/actions/autofocusdrive not found in configuration tree",
+            returncode=1,
+        ),
     ]
     with patch("subprocess.run", side_effect=responses):
         with pytest.raises(CameraRemoteModeRequired, match="supported remote-control config"):
@@ -78,7 +86,10 @@ def test_connect_raises_when_only_autofocusdrive_is_readable() -> None:
 
     def fake_run(cmd: list[str], **_: object) -> MagicMock:
         if cmd[:2] == ["gphoto2", "--auto-detect"]:
-            return _proc(stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n", returncode=0)
+            return _proc(
+                stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n",
+                returncode=0,
+            )
         if cmd[-1] == "/main/settings/capturetarget":
             return _proc(stderr="not found in configuration tree", returncode=1)
         if cmd[-1] == "/main/actions/bulb":
@@ -130,7 +141,9 @@ def test_connect_succeeds_when_fuji_style_bulb_probe_is_readable() -> None:
             return _proc(stdout="Label: Bulb Mode\nCurrent: 2\nEND\n", returncode=0)
         if any("usbpowersupply" in arg for arg in cmd):
             return _proc(stderr="usbpowersupply not found in configuration tree", returncode=1)
-        return _proc(stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n", returncode=0)
+        return _proc(
+            stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n", returncode=0
+        )
 
     with patch("subprocess.run", side_effect=fake_run):
         backend.connect()
@@ -146,7 +159,9 @@ def test_connect_ignores_missing_usb_power_supply_config() -> None:
             return _proc(stdout="Label: Capture Target\nCurrent: Memory card\nEND\n", returncode=0)
         if any("usbpowersupply" in arg for arg in cmd):
             return _proc(stderr="usbpowersupply not found in configuration tree", returncode=1)
-        return _proc(stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n", returncode=0)
+        return _proc(
+            stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n", returncode=0
+        )
 
     with patch("subprocess.run", side_effect=fake_run):
         backend.connect()
@@ -321,7 +336,10 @@ def test_diagnostic_status_reports_card_reader_mode() -> None:
 
     def fake_run(cmd: list[str], **_: object) -> MagicMock:
         if cmd[:2] == ["gphoto2", "--auto-detect"]:
-            return _proc(stdout="Model                          Port\n---\nFuji Fujifilm X-T5             usb:003,012\n", returncode=0)
+            return _proc(
+                stdout="Model                          Port\n---\nFuji Fujifilm X-T5             usb:003,012\n",
+                returncode=0,
+            )
         if cmd[-1] in {"/main/settings/capturetarget", "/main/actions/bulb"}:
             return _proc(stderr="not found in configuration tree", returncode=1)
         if cmd[-1] == "/main/status/cameramodel":
@@ -772,13 +790,18 @@ def test_capture_raises_when_camera_is_in_autocapture_mode(tmp_path: Path) -> No
     def fake_run(cmd: list[str], **_: object) -> MagicMock:
         call_args_list.append(cmd)
         if cmd[:2] == ["gphoto2", "--auto-detect"]:
-            return _proc(stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n", returncode=0)
+            return _proc(
+                stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n",
+                returncode=0,
+            )
         if cmd[-1] == "/main/settings/capturetarget":
             return _proc(stderr="not found in configuration tree", returncode=1)
         if cmd[-1] == "/main/actions/bulb":
             return _proc(stdout="Label: Bulb Mode\nCurrent: 2\nEND\n", returncode=0)
         if cmd[-1] == "/main/capturesettings/capturemode":
-            return _proc(stdout="Label: Still Capture Mode\nCurrent: Self-timer\nEND\n", returncode=0)
+            return _proc(
+                stdout="Label: Still Capture Mode\nCurrent: Self-timer\nEND\n", returncode=0
+            )
         if cmd[-1] == "/main/capturesettings/capturedelay":
             return _proc(stdout="Label: Capture Delay\nCurrent: 2.000s\nEND\n", returncode=0)
         if cmd[:2] == ["gphoto2", "--reset"]:
@@ -864,7 +887,9 @@ def test_capture_allows_self_timer_label_when_capture_delay_zero(tmp_path: Path)
         if cmd[-1] == "/main/actions/bulb":
             return _proc(stdout="Label: Bulb Mode\nCurrent: 2\nEND\n", returncode=0)
         if cmd[-1] == "/main/capturesettings/capturemode":
-            return _proc(stdout="Label: Still Capture Mode\nCurrent: Self-timer\nEND\n", returncode=0)
+            return _proc(
+                stdout="Label: Still Capture Mode\nCurrent: Self-timer\nEND\n", returncode=0
+            )
         if cmd[-1] == "/main/capturesettings/capturedelay":
             return _proc(stdout="Label: Capture Delay\nCurrent: 0.000s\nEND\n", returncode=0)
         if "--capture-image-and-download" in cmd:

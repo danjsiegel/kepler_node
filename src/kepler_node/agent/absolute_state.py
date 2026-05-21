@@ -226,7 +226,8 @@ class CanonicalAbsoluteState(BaseModel):
         return (
             self.broker_state in {BrokerRuntimeState.READY, BrokerRuntimeState.DEGRADED}
             and self.ekos_state in {EkosRuntimeState.PAUSED, EkosRuntimeState.IDLE}
-            and self.intervention_window in {InterventionWindowState.CLOSED, InterventionWindowState.RELEASING}
+            and self.intervention_window
+            in {InterventionWindowState.CLOSED, InterventionWindowState.RELEASING}
         )
 
     def requires_conservative_pause(self) -> bool:

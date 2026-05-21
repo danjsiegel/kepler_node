@@ -181,7 +181,11 @@ def _planner_mode_copy(
     return (
         planner_mode,
         "Planner Guidance",
-        [planner_conn.get("summary", "Planner details unavailable") if planner_conn else "Planner details unavailable"],
+        [
+            planner_conn.get("summary", "Planner details unavailable")
+            if planner_conn
+            else "Planner details unavailable"
+        ],
         [],
     )
 
@@ -509,7 +513,8 @@ with target_tab:
                 st.metric(
                     "Camera Settings",
                     ", ".join(
-                        f"{key}={value}" for key, value in run_params.get("camera_settings", {}).items()
+                        f"{key}={value}"
+                        for key, value in run_params.get("camera_settings", {}).items()
                     )
                     or "—",
                 )

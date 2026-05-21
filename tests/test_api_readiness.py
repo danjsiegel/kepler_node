@@ -723,4 +723,3 @@ def test_node_status_time_certainty_reflects_gps_source(tmp_path: Path) -> None:
 
     assert data["time_certainty"]["trusted"] is True
     assert data["time_certainty"]["source"] == "gps"
-

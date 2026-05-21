@@ -26,9 +26,7 @@ from kepler_node.storage.filesystem import FilesystemSessionStore
 # ---------------------------------------------------------------------------
 
 
-def _pass_result(
-    hfr: float = 2.0, stars: int = 8, hot_px: int = 5
-) -> QualityCheckResult:
+def _pass_result(hfr: float = 2.0, stars: int = 8, hot_px: int = 5) -> QualityCheckResult:
     return QualityCheckResult(
         overall=QualityClassification.PASS,
         checks={"focus": QualityClassification.PASS, "tracking": QualityClassification.PASS},

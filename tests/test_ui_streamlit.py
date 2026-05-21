@@ -67,7 +67,9 @@ def _make_mock_client() -> MagicMock:
     return client
 
 
-def _make_mode_client(*, planner_mode: str, planner_connection_details: dict[str, object]) -> MagicMock:
+def _make_mode_client(
+    *, planner_mode: str, planner_connection_details: dict[str, object]
+) -> MagicMock:
     client = _make_mock_client()
     client.get_node_status.return_value = {
         **client.get_node_status.return_value,

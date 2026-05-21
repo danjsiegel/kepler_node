@@ -115,10 +115,10 @@ def test_upgrade_sh_reads_release_metadata() -> None:
 
 def test_upgrade_sh_defines_indi_port_for_service_template() -> None:
     content = (_REPO_ROOT / "upgrade.sh").read_text()
-    assert 'INDI_PORT=7624' in content, (
+    assert "INDI_PORT=7624" in content, (
         "upgrade.sh must define INDI_PORT before rendering the indiserver service template"
     )
-    assert 'indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}' in content, (
+    assert "indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}" in content, (
         "upgrade.sh must render the indiserver unit with the configured INDI port"
     )
 
@@ -197,9 +197,12 @@ def test_bootstrap_sh_installs_full_supported_runtime_once() -> None:
         assert package_name in content, (
             f"bootstrap.sh must install {package_name} as part of the full supported package set"
         )
-    assert 'if [[ "${PROFILE}" == "field-fallback" ]]' not in content[content.find("COMMON_PACKAGES="):content.find("ok \"System prerequisites installed\"")], (
-        "bootstrap.sh should not split the apt install footprint by profile"
-    )
+    assert (
+        'if [[ "${PROFILE}" == "field-fallback" ]]'
+        not in content[
+            content.find("COMMON_PACKAGES=") : content.find('ok "System prerequisites installed"')
+        ]
+    ), "bootstrap.sh should not split the apt install footprint by profile"
 
 
 def test_bootstrap_sh_falls_back_when_indi_full_is_unavailable() -> None:
@@ -230,9 +233,10 @@ def test_bootstrap_sh_makes_uv_available_after_installer_runs() -> None:
     assert "ln -sf" in content and "/usr/local/bin/uv" in content, (
         "bootstrap.sh must make the discovered uv binary reachable from a stable system path"
     )
-    assert 'command -v uv >/dev/null 2>&1 || fail "uv installation succeeded but the uv binary is not on PATH"' in content, (
-        "bootstrap.sh must fail clearly if uv still is not resolvable after installation"
-    )
+    assert (
+        'command -v uv >/dev/null 2>&1 || fail "uv installation succeeded but the uv binary is not on PATH"'
+        in content
+    ), "bootstrap.sh must fail clearly if uv still is not resolvable after installation"
 
 
 def test_bootstrap_sh_field_fallback_creates_indiserver_service() -> None:
@@ -255,7 +259,10 @@ def test_bootstrap_and_upgrade_use_fifo_mode_for_generic_indiserver() -> None:
         assert "ExecStartPre=/usr/bin/mkfifo /run/kepler-indiserver/control.fifo" in content, (
             f"{script_name} must create the INDI control FIFO before startup"
         )
-        assert "ExecStart=/usr/bin/indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}" in content, (
+        assert (
+            "ExecStart=/usr/bin/indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}"
+            in content
+        ), (
             f"{script_name} must run indiserver in FIFO mode so the generic service stays up without hardcoded drivers"
         )
 
@@ -464,9 +471,7 @@ def test_deploy_pi_workflow_targets_self_hosted_pi_runner() -> None:
     assert "self-hosted" in content and "kepler-pi" in content, (
         "deploy-pi.yml must target the self-hosted Pi runner labels"
     )
-    assert "scripts/deploy_pi.sh" in content, (
-        "deploy-pi.yml must invoke the Pi-local deploy helper"
-    )
+    assert "scripts/deploy_pi.sh" in content, "deploy-pi.yml must invoke the Pi-local deploy helper"
 
 
 # ---------------------------------------------------------------------------
@@ -481,9 +486,7 @@ def test_fuji_focus_bridge_verify_script_exists() -> None:
         "verification script for the Fuji focus bridge (Phase 4 acceptance check 2)"
     )
     content = script.read_text()
-    assert "#!/usr/bin/env bash" in content, (
-        "fuji_focus_bridge_verify.sh must have a bash shebang"
-    )
+    assert "#!/usr/bin/env bash" in content, "fuji_focus_bridge_verify.sh must have a bash shebang"
 
 
 def test_fuji_focus_bridge_verify_script_defaults_to_read_only() -> None:
@@ -531,8 +534,12 @@ def test_fuji_focus_bridge_indi_driver_files_exist() -> None:
         "indi/fuji_focus_bridge/ must exist as the standalone INDI focuser sidecar "
         "(Phase 4 acceptance check 3)"
     )
-    required_files = ("fuji_focus_bridge.cpp", "fuji_focus_bridge.h",
-                      "fuji_focus_bridge.xml", "CMakeLists.txt")
+    required_files = (
+        "fuji_focus_bridge.cpp",
+        "fuji_focus_bridge.h",
+        "fuji_focus_bridge.xml",
+        "CMakeLists.txt",
+    )
     for fname in required_files:
         assert (bridge_dir / fname).exists(), (
             f"indi/fuji_focus_bridge/{fname} must exist for the sidecar to be buildable "
@@ -609,18 +616,28 @@ def test_fuji_focus_bridge_cmake_falls_back_without_indiconfig() -> None:
         "indi/fuji_focus_bridge/CMakeLists.txt must not require INDIConfig.cmake unconditionally; "
         "Debian/Raspberry Pi libindi-dev may not ship it"
     )
-    assert "find_path(FUJI_FOCUS_BRIDGE_INDI_INCLUDE_PARENT_DIR NAMES libindi/indifocuser.h)" in content, (
+    assert (
+        "find_path(FUJI_FOCUS_BRIDGE_INDI_INCLUDE_PARENT_DIR NAMES libindi/indifocuser.h)"
+        in content
+    ), (
         "indi/fuji_focus_bridge/CMakeLists.txt must fall back to direct INDI header lookup when "
         "INDIConfig.cmake is unavailable"
     )
-    assert "find_library(FUJI_FOCUS_BRIDGE_INDI_DRIVER_LIBRARY NAMES indidriver libindidriver)" in content, (
+    assert (
+        "find_library(FUJI_FOCUS_BRIDGE_INDI_DRIVER_LIBRARY NAMES indidriver libindidriver)"
+        in content
+    ), (
         "indi/fuji_focus_bridge/CMakeLists.txt must fall back to direct INDI driver library lookup "
         "when INDIConfig.cmake is unavailable"
     )
-    assert "FUJI_FOCUS_BRIDGE_INDI_INCLUDE_PARENT_DIR}/libindi" in content or "FUJI_FOCUS_BRIDGE_INDI_INCLUDE_DIR})" in content, (
+    assert (
+        "FUJI_FOCUS_BRIDGE_INDI_INCLUDE_PARENT_DIR}/libindi" in content
+        or "FUJI_FOCUS_BRIDGE_INDI_INCLUDE_DIR})" in content
+    ), (
         "indi/fuji_focus_bridge/CMakeLists.txt must add the libindi header directory itself to the "
         "include path so internal quoted headers like indidevapi.h resolve on Debian/Raspberry Pi"
     )
+
 
 def test_fuji_focus_bridge_abort_uses_process_kill() -> None:
     cpp_path = _REPO_ROOT / "indi" / "fuji_focus_bridge" / "fuji_focus_bridge.cpp"
@@ -695,7 +712,10 @@ def test_fuji_focus_bridge_verify_script_uses_exact_focuser_property_matcher() -
         "fuji_focus_bridge_verify.sh must not use a broad FOC_ matcher because "
         "it falsely matches non-focuser properties like ACTIVE_FOCUSER"
     )
-    assert "grep -Ei '\\.(FOCUS_MOTION|FOCUS_STEPS|FOCUS_ABORT|FOCUS_STATUS|FOCUS_SPEED|REL_FOCUS|ABS_FOCUS)\\.'" in content, (
+    assert (
+        "grep -Ei '\\.(FOCUS_MOTION|FOCUS_STEPS|FOCUS_ABORT|FOCUS_STATUS|FOCUS_SPEED|REL_FOCUS|ABS_FOCUS)\\.'"
+        in content
+    ), (
         "fuji_focus_bridge_verify.sh must match only exact INDI focuser property "
         "names bounded by dots in Device.Property.Element output"
     )

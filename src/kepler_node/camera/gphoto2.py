@@ -144,12 +144,15 @@ class Gphoto2CameraBackend:
         # capturetarget is not universal; Fuji tethered-control posture exposes
         # /main/actions/bulb, while card-reader/PTP posture exposes only status
         # nodes and autofocusdrive.
-        return self._first_readable_config(
-            (
-                "/main/settings/capturetarget",
-                "/main/actions/bulb",
+        return (
+            self._first_readable_config(
+                (
+                    "/main/settings/capturetarget",
+                    "/main/actions/bulb",
+                )
             )
-        ) is not None
+            is not None
+        )
 
     @staticmethod
     def _has_gphoto_capture_failure(stderr: str) -> bool:
@@ -246,7 +249,9 @@ class Gphoto2CameraBackend:
         if reprobe.get("status") != "autocapture_mode":
             return reprobe
 
-        usb_device = self._find_usb_sysfs_device(str(diagnostic.get("camera") or reprobe.get("camera") or ""))
+        usb_device = self._find_usb_sysfs_device(
+            str(diagnostic.get("camera") or reprobe.get("camera") or "")
+        )
         if usb_device is None:
             recovery_steps.append("usb re-enumeration unavailable")
             reprobe["recovery_steps"] = recovery_steps
@@ -350,7 +355,9 @@ class Gphoto2CameraBackend:
         if remote_probe is not None:
             capture_mode = self._config_current_value("/main/capturesettings/capturemode")
             capture_delay = self._config_current_value("/main/capturesettings/capturedelay")
-            if self._is_autocapture_mode(capture_mode) and self._capture_delay_is_armed(capture_delay):
+            if self._is_autocapture_mode(capture_mode) and self._capture_delay_is_armed(
+                capture_delay
+            ):
                 return {
                     "status": "autocapture_mode",
                     "connected": True,
@@ -439,7 +446,9 @@ class Gphoto2CameraBackend:
         if diagnostic.get("status") == "autocapture_mode":
             recovered = self._attempt_autocapture_recovery(diagnostic)
             if recovered.get("status") != "remote_control_ready":
-                recovery_notes = "; ".join(str(step) for step in recovered.get("recovery_steps", []))
+                recovery_notes = "; ".join(
+                    str(step) for step in recovered.get("recovery_steps", [])
+                )
                 detail = recovered.get(
                     "summary",
                     "Camera is in a blocked auto-capture mode",
@@ -449,9 +458,7 @@ class Gphoto2CameraBackend:
                 operator_hint = recovered.get("operator_hint") or diagnostic.get("operator_hint")
                 if operator_hint:
                     detail = f"{detail}. {operator_hint}"
-                raise CameraAutocaptureModeBlocked(
-                    f"camera_autocapture_mode_blocking: {detail}"
-                )
+                raise CameraAutocaptureModeBlocked(f"camera_autocapture_mode_blocking: {detail}")
 
         # Enforce USB power supply mode when the camera exposes that control.
         usb_result = self._run(["--set-config", f"usbpowersupply={self._usb_power_supply_mode}"])
@@ -537,7 +544,9 @@ class Gphoto2CameraBackend:
             if recovered.get("status") == "remote_control_ready":
                 diagnostic = recovered
             else:
-                recovery_notes = "; ".join(str(step) for step in recovered.get("recovery_steps", []))
+                recovery_notes = "; ".join(
+                    str(step) for step in recovered.get("recovery_steps", [])
+                )
                 summary = recovered.get(
                     "summary",
                     "Camera is in a blocked auto-capture mode",
@@ -548,9 +557,7 @@ class Gphoto2CameraBackend:
                 operator_hint = recovered.get("operator_hint") or diagnostic.get("operator_hint")
                 if operator_hint:
                     detail = f"{detail}. {operator_hint}"
-                raise CameraAutocaptureModeBlocked(
-                    f"camera_autocapture_mode_blocking: {detail}"
-                )
+                raise CameraAutocaptureModeBlocked(f"camera_autocapture_mode_blocking: {detail}")
 
         if diagnostic.get("status") == "autocapture_mode":
             raise CameraAutocaptureModeBlocked(
@@ -594,14 +601,21 @@ class Gphoto2CameraBackend:
         captured_at = datetime.now(UTC)
         matches = sorted(request.destination_dir.glob(f"{filename_stem}*"))
 
-        if (capture_result.returncode != 0 or self._has_gphoto_capture_failure(capture_result.stderr)) and not matches:
+        if (
+            capture_result.returncode != 0
+            or self._has_gphoto_capture_failure(capture_result.stderr)
+        ) and not matches:
             # The Fuji body may hold a pending image transfer from the failed
             # operation (camera UI shows "Transfer image to PC"; all PTP writes
             # block with 0xa002 until the object is drained).  Attempt to drain
             # it before surfacing the error to the caller.
             matches = self._drain_pending_transfer(request.destination_dir, filename_stem)
             if not matches:
-                detail = capture_result.stderr.strip() or capture_result.stdout.strip() or "unknown error"
+                detail = (
+                    capture_result.stderr.strip()
+                    or capture_result.stdout.strip()
+                    or "unknown error"
+                )
                 raise RuntimeError(f"gphoto2 capture failed: {detail}")
 
         if not matches:

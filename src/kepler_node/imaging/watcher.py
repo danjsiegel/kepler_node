@@ -68,7 +68,9 @@ class FrameWatcher:
         """
         self._running = True
         self._seen = self._snapshot()
-        _logger.info("FrameWatcher started on %s (%d existing files)", self._directory, len(self._seen))
+        _logger.info(
+            "FrameWatcher started on %s (%d existing files)", self._directory, len(self._seen)
+        )
 
         while self._running:
             await asyncio.sleep(self._poll_interval)
@@ -108,9 +110,7 @@ class FrameWatcher:
                     except Exception:
                         _logger.exception("on_new_frame callback raised for %s", path)
 
-                _logger.debug(
-                    "frame %s → %s (%s)", path.name, result.overall, result.summary
-                )
+                _logger.debug("frame %s → %s (%s)", path.name, result.overall, result.summary)
                 yield path, result
 
     def stop(self) -> None:

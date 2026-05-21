@@ -110,9 +110,7 @@ class LocalNodeManagementBackend:
                     if msg.get("class") == "TPV" and msg.get("mode", 0) >= 2:
                         time_str = msg.get("time")
                         if time_str:
-                            gps_time = datetime.fromisoformat(
-                                time_str.replace("Z", "+00:00")
-                            )
+                            gps_time = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
                             if gps_time.tzinfo is None:
                                 gps_time = gps_time.replace(tzinfo=UTC)
                             return gps_time, True

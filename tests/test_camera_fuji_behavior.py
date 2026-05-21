@@ -195,9 +195,7 @@ def test_drain_runs_before_set_config_during_connect() -> None:
 
     assert drain_indices, "drain must run at connect time"
     assert set_indices, "set-config must run at connect time"
-    assert drain_indices[0] < set_indices[0], (
-        "drain must precede the first --set-config call"
-    )
+    assert drain_indices[0] < set_indices[0], "drain must precede the first --set-config call"
 
 
 # ---------------------------------------------------------------------------

@@ -74,13 +74,15 @@ _FRAME_SUSPECT_FAILURES = {
 # Device-activity event types that count toward the "settled activity" check
 # in confirm_ekos_paused() (spec line 398). Read-only observation events
 # (temperature readings, focus position changes) are intentionally excluded.
-_SIGNIFICANT_ACTIVITY_TYPES: frozenset[DeviceActivityEventType] = frozenset({
-    DeviceActivityEventType.MOUNT_SLEW_STARTED,
-    DeviceActivityEventType.MOUNT_SLEW_COMPLETED,
-    DeviceActivityEventType.MOUNT_SYNC_APPLIED,
-    DeviceActivityEventType.CAPTURE_STARTED,
-    DeviceActivityEventType.CAPTURE_COMPLETED,
-})
+_SIGNIFICANT_ACTIVITY_TYPES: frozenset[DeviceActivityEventType] = frozenset(
+    {
+        DeviceActivityEventType.MOUNT_SLEW_STARTED,
+        DeviceActivityEventType.MOUNT_SLEW_COMPLETED,
+        DeviceActivityEventType.MOUNT_SYNC_APPLIED,
+        DeviceActivityEventType.CAPTURE_STARTED,
+        DeviceActivityEventType.CAPTURE_COMPLETED,
+    }
+)
 
 
 class TransitionResult(BaseModel):
@@ -141,9 +143,7 @@ class ClawController:
                 name="camera_remote_mode_required",
                 severity="blocking",
                 summary=msg,
-                operator_action_required=(
-                    "Switch camera to USB remote-control mode and retry"
-                ),
+                operator_action_required=("Switch camera to USB remote-control mode and retry"),
             )
         return None
 
@@ -210,7 +210,10 @@ class ClawController:
             broker_snap: BrokerSnapshot = self.broker.snapshot()
             if broker_snap.is_stale:
                 broker_state = BrokerRuntimeState.UNKNOWN
-            elif broker_snap.broker_state == BrokerRuntimeState.READY and not broker_snap.device_path_available:
+            elif (
+                broker_snap.broker_state == BrokerRuntimeState.READY
+                and not broker_snap.device_path_available
+            ):
                 # Broker reports ready but the INDI device path is not accepting
                 # connections: treat as DEGRADED rather than READY.
                 broker_state = BrokerRuntimeState.DEGRADED
@@ -222,7 +225,9 @@ class ClawController:
         # --- Ekos state ---
         try:
             ekos_snap: NormalizedEkosSnapshot = self.ekos.status()
-            ekos_state = ekos_snap.ekos_state if not ekos_snap.is_stale else EkosRuntimeState.UNKNOWN
+            ekos_state = (
+                ekos_snap.ekos_state if not ekos_snap.is_stale else EkosRuntimeState.UNKNOWN
+            )
         except Exception:
             ekos_state = EkosRuntimeState.UNKNOWN
 
@@ -248,7 +253,10 @@ class ClawController:
             active_owner = ActiveOwner.UNKNOWN
         elif iw == InterventionWindowState.CLOSED and ekos_state == EkosRuntimeState.RUNNING:
             active_owner = ActiveOwner.EKOS
-        elif ekos_state in {EkosRuntimeState.UNKNOWN, EkosRuntimeState.UNAVAILABLE} or iw == InterventionWindowState.UNKNOWN:
+        elif (
+            ekos_state in {EkosRuntimeState.UNKNOWN, EkosRuntimeState.UNAVAILABLE}
+            or iw == InterventionWindowState.UNKNOWN
+        ):
             # Cannot determine ownership — conservative unknown
             active_owner = ActiveOwner.UNKNOWN
         elif iw in {InterventionWindowState.REQUESTED, InterventionWindowState.RELEASING}:
@@ -530,15 +538,15 @@ class ClawController:
                 "camera keepalive: reconnected after heartbeat failure",
                 EventSeverity.WARNING,
             )
-            return self._make_transition(prev, prev, "camera keepalive: reconnected after heartbeat failure")
+            return self._make_transition(
+                prev, prev, "camera keepalive: reconnected after heartbeat failure"
+            )
         except Exception as exc:
             blocker = ReadinessCondition(
                 name="camera_disconnected",
                 severity="blocking",
                 summary=f"Camera heartbeat failed and reconnect failed: {exc}",
-                operator_action_required=(
-                    "Check USB connection, power on camera, and resume"
-                ),
+                operator_action_required=("Check USB connection, power on camera, and resume"),
             )
             self.session.pause(
                 pause_reason="camera_keepalive_reconnect_failed",
@@ -652,7 +660,10 @@ class ClawController:
         """
         from kepler_node.imaging.ingestion import ingest_frame
         from kepler_node.imaging.protocols import QualityCheckResult, QualityClassification
-        from kepler_node.imaging.verification import VerificationSolveHelper, VerificationSolveResult
+        from kepler_node.imaging.verification import (
+            VerificationSolveHelper,
+            VerificationSolveResult,
+        )
 
         helper = VerificationSolveHelper(self.solver, reason=reason)
         vr: VerificationSolveResult = helper.solve_for_verification(
@@ -772,7 +783,10 @@ class ClawController:
                     )
                 )
             else:
-                if camera_diag and camera_diag.get("status") in {"card_reader_mode", "detected_unknown_mode"}:
+                if camera_diag and camera_diag.get("status") in {
+                    "card_reader_mode",
+                    "detected_unknown_mode",
+                }:
                     blockers.append(
                         ReadinessCondition(
                             name="camera_remote_mode_required",
@@ -1338,7 +1352,6 @@ class ClawController:
         self.session.state = ClawState.CAPTURE
         return self._make_transition(prev, ClawState.CAPTURE, "guard passed, continuing capture")
 
-
     def recover(
         self,
         *,
@@ -1519,7 +1532,10 @@ class ClawController:
                     EventType.WARNING,
                     "resume: canonical state unknown or stale; staying paused (active_owner=unknown)",
                     EventSeverity.WARNING,
-                    details={"ekos_state": str(state.ekos_state), "broker_state": str(state.broker_state)},
+                    details={
+                        "ekos_state": str(state.ekos_state),
+                        "broker_state": str(state.broker_state),
+                    },
                 )
                 # Window stays REQUESTED; ownership stays UNKNOWN.
                 self._intervention_window = InterventionWindowState.REQUESTED

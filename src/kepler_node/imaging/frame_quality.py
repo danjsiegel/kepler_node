@@ -164,9 +164,7 @@ class FrameQualityAnalyzer:
 
         # Threshold: bg + 5σ, capped to avoid saturated-star pollution
         thresh_val = min(bg + 5.0 * bg_std, 240.0)
-        _, binary = cv2.threshold(
-            gray.astype(np.float32), thresh_val, 255.0, cv2.THRESH_BINARY
-        )
+        _, binary = cv2.threshold(gray.astype(np.float32), thresh_val, 255.0, cv2.THRESH_BINARY)
         binary = binary.astype(np.uint8)
 
         # Morphological open removes single-pixel noise hits
@@ -234,6 +232,7 @@ class FrameQualityAnalyzer:
 # Module-level helpers (no state, no self)
 # ---------------------------------------------------------------------------
 
+
 def _compute_hfr(gray: np.ndarray, cx: float, cy: float, background: float) -> float:
     """Compute half-flux radius for a star centroid within a 40px window."""
     h, w = gray.shape
@@ -266,9 +265,7 @@ def _classify_high_bad(
     return QualityClassification.PASS
 
 
-def _build_summary(
-    checks: dict[str, QualityClassification], metrics: dict[str, float]
-) -> str:
+def _build_summary(checks: dict[str, QualityClassification], metrics: dict[str, float]) -> str:
     issues = [k for k, v in checks.items() if v != QualityClassification.PASS]
     stars = int(metrics.get("star_count", 0))
     hfr = metrics.get("hfr_mean", 0.0)
@@ -291,6 +288,7 @@ def _build_summary(
 # ---------------------------------------------------------------------------
 # Session-level quality trend tracker
 # ---------------------------------------------------------------------------
+
 
 class FrameQualitySession:
     """Tracks frame quality across a session to detect drift and recommend action.
@@ -356,9 +354,8 @@ class FrameQualitySession:
         star_counts = [r.metrics.get("star_count", 0.0) for r in frames]
         recent_stars = float(np.mean(star_counts[-3:]))
         early_stars = float(np.mean(star_counts[:3]))
-        if (
-            early_stars >= self._min_stars_for_weather_check
-            and recent_stars < early_stars * (1.0 - self._weather_star_drop_fraction)
+        if early_stars >= self._min_stars_for_weather_check and recent_stars < early_stars * (
+            1.0 - self._weather_star_drop_fraction
         ):
             return self.Recommendation.PAUSE_WEATHER
 

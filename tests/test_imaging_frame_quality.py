@@ -56,7 +56,9 @@ def _add_star(
     return np.clip(img_f, 0, 255).astype(np.uint8)
 
 
-def _star_field(n_stars: int = 8, shape: tuple[int, int] = (300, 300), sigma: float = 2.5) -> np.ndarray:
+def _star_field(
+    n_stars: int = 8, shape: tuple[int, int] = (300, 300), sigma: float = 2.5
+) -> np.ndarray:
     """Return a synthetic star field with n_stars round Gaussian stars."""
     rng = np.random.default_rng(42)
     img = _blank(shape)
@@ -282,7 +284,9 @@ def test_summary_is_non_empty(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_result(hfr: float, hot_pixels: float, overall: QualityClassification = QualityClassification.PASS) -> QualityCheckResult:
+def _make_result(
+    hfr: float, hot_pixels: float, overall: QualityClassification = QualityClassification.PASS
+) -> QualityCheckResult:
     return QualityCheckResult(
         overall=overall,
         checks={"focus": overall},
@@ -291,7 +295,9 @@ def _make_result(hfr: float, hot_pixels: float, overall: QualityClassification =
 
 
 def _make_result_with_stars(
-    hfr: float, hot_pixels: float, star_count: float,
+    hfr: float,
+    hot_pixels: float,
+    star_count: float,
     overall: QualityClassification = QualityClassification.PASS,
 ) -> QualityCheckResult:
     return QualityCheckResult(
@@ -535,7 +541,9 @@ async def test_watcher_retries_load_fail_result_on_next_poll(tmp_path: Path) -> 
     session = FrameQualitySession()
     callback_calls: list[tuple[Path, object]] = []
     watcher = FrameWatcher(
-        output_dir, analyzer, session=session,
+        output_dir,
+        analyzer,
+        session=session,
         poll_interval_seconds=0.05,
         on_new_frame=lambda p, r: callback_calls.append((p, r)),
     )
@@ -558,9 +566,7 @@ async def test_watcher_retries_load_fail_result_on_next_poll(tmp_path: Path) -> 
     await asyncio.sleep(0.3)
 
     # Nothing must have been yielded, session must be pristine, callback silent
-    assert len(results) == 0, (
-        f"Load-FAIL must not be yielded; got {len(results)} results"
-    )
+    assert len(results) == 0, f"Load-FAIL must not be yielded; got {len(results)} results"
     assert session.frame_count == 0, (
         f"Load-FAIL must not mutate the quality session; frame_count={session.frame_count}"
     )
@@ -575,8 +581,7 @@ async def test_watcher_retries_load_fail_result_on_next_poll(tmp_path: Path) -> 
     await asyncio.wait_for(task, timeout=3.0)
 
     assert len(results) == 1, (
-        "Expected one result after the file became readable; "
-        f"got {len(results)}"
+        f"Expected one result after the file became readable; got {len(results)}"
     )
     assert results[0][0].name == "landing.jpg"
     yielded_result = results[0][1]

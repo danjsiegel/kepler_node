@@ -96,7 +96,10 @@ def _camera_remote_mode_status() -> tuple[str, str]:
     ):
         config = _run(["gphoto2", "--get-config", config_path], timeout=20)
         if config.returncode == 0:
-            return "pass", f"remote-control surface available via {config_path} ({detected_lines[0]})"
+            return (
+                "pass",
+                f"remote-control surface available via {config_path} ({detected_lines[0]})",
+            )
 
     for status_path in (
         "/main/status/cameramodel",
@@ -111,7 +114,9 @@ def _camera_remote_mode_status() -> tuple[str, str]:
                 "switch the body to USB tether/remote-control mode",
             )
 
-    detail = config.stderr.strip() or config.stdout.strip() or "no supported control probe available"
+    detail = (
+        config.stderr.strip() or config.stdout.strip() or "no supported control probe available"
+    )
     return (
         "fail",
         "Camera detected but not in supported USB remote-control mode; "
@@ -133,7 +138,9 @@ def run_smoke(args: argparse.Namespace) -> int:
     rtc_sync = props.get("RTCSynchronized", "no").lower() == "yes"
     timezone = props.get("Timezone", "unknown")
     if timedatectl_error is not None:
-        _append(results, "fail", "time synchronization", f"timedatectl unavailable: {timedatectl_error}")
+        _append(
+            results, "fail", "time synchronization", f"timedatectl unavailable: {timedatectl_error}"
+        )
     elif ntp_sync or rtc_sync:
         _append(
             results,
@@ -199,7 +206,9 @@ def run_smoke(args: argparse.Namespace) -> int:
     elif gpspipe_error is not None:
         _append(results, "fail", "gps fix", f"Could not inspect GPS fix state: {gpspipe_error}")
     elif args.require_gps_fix:
-        _append(results, "fail", "gps fix", "GPS fix required, but no TPV fix with time was observed")
+        _append(
+            results, "fail", "gps fix", "GPS fix required, but no TPV fix with time was observed"
+        )
     else:
         _append(results, "warn", "gps fix", "No TPV fix observed yet; this may be normal indoors")
 
@@ -226,7 +235,12 @@ def run_smoke(args: argparse.Namespace) -> int:
             if state == "active":
                 _append(results, "pass", f"service {service_name}", f"{service_name} is active")
             else:
-                _append(results, "fail", f"service {service_name}", f"{service_name} is not active ({state})")
+                _append(
+                    results,
+                    "fail",
+                    f"service {service_name}",
+                    f"{service_name} is not active ({state})",
+                )
 
         if args.expect_profile == "field-fallback":
             xrdp_state = _service_state("xrdp")

@@ -384,7 +384,9 @@ def test_confirm_time_action_satisfies_node_management_backend_protocol(
 # ---------------------------------------------------------------------------
 
 _GPS_TPV_FIX = '{"class":"TPV","mode":3,"time":"2026-05-13T22:00:00.000Z","lat":40.0,"lon":-74.0}'
-_GPS_TPV_FIX_TZ_NAIVE = '{"class":"TPV","mode":3,"time":"2026-05-13T22:00:00.000","lat":40.0,"lon":-74.0}'
+_GPS_TPV_FIX_TZ_NAIVE = (
+    '{"class":"TPV","mode":3,"time":"2026-05-13T22:00:00.000","lat":40.0,"lon":-74.0}'
+)
 _GPS_NO_FIX = '{"class":"TPV","mode":1}'
 _GPS_VERSION_MSG = '{"class":"VERSION","release":"3.23"}'
 
