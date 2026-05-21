@@ -1,0 +1,365 @@
+diff --git a/indi-gphoto/CMakeLists.txt b/indi-gphoto/CMakeLists.txt
+index e0f3aad6..84050f88 100644
+--- a/indi-gphoto/CMakeLists.txt
++++ b/indi-gphoto/CMakeLists.txt
+@@ -9,6 +9,7 @@ LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake_modules/")
+ include(GNUInstallDirs)
+ 
+ option(INDI_INSTALL_UDEV_RULES "Install UDEV rules" On)
++option(KEPLER_BUILD_CUSTOM_FUJI_ONLY "Build only the Kepler Fuji DSLR target" Off)
+ set(UDEVRULES_INSTALL_DIR "/usr/lib/udev/rules.d" CACHE STRING "Base directory for udev rules")
+ 
+ SET(BIN_INSTALL_DIR "${CMAKE_INSTALL_PREFIX}/bin")
+@@ -18,7 +19,7 @@ SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall" )
+ SET(CMAKE_C_FLAGS_DEBUG "-O0 -g -DDEBUG_FITS" )
+ 
+ find_package(CFITSIO REQUIRED)
+-find_package(INDI REQUIRED)
++find_package(INDI QUIET)
+ find_package(ZLIB REQUIRED)
+ find_package(GPHOTO2 REQUIRED)
+ find_package(Threads REQUIRED)
+@@ -26,6 +27,15 @@ find_package(JPEG REQUIRED)
+ find_package(LibRaw REQUIRED)
+ find_package(USB1 REQUIRED)
+ 
++if (NOT INDI_FOUND)
++  find_path(INDI_INCLUDE_DIR NAMES indiccd.h indifocuserinterface.h PATH_SUFFIXES libindi)
++  find_library(INDI_LIBRARIES NAMES indidriver libindidriver)
++
++  if (NOT INDI_INCLUDE_DIR OR NOT INDI_LIBRARIES)
++    message(FATAL_ERROR "Could not locate INDI headers/libraries. Install libindi-dev or set CMAKE_PREFIX_PATH for a custom INDI install.")
++  endif ()
++endif ()
++
+ include(CMakeCommon)
+ include(CheckStructHasMember)
+ 
+@@ -87,30 +97,39 @@ ENDIF ()
+ 
+ SET_SOURCE_FILES_PROPERTIES(gphoto_readimage.cpp PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
+ 
+-add_executable(indi_gphoto_ccd ${indigphoto_SRCS})
++if (NOT KEPLER_BUILD_CUSTOM_FUJI_ONLY)
++  add_executable(indi_gphoto_ccd ${indigphoto_SRCS})
+ 
+-target_link_libraries(indi_gphoto_ccd ${INDI_LIBRARIES} ${CFITSIO_LIBRARIES} ${GPHOTO2_LIBRARY} ${GPHOTO2_PORT_LIBRARY} ${CMAKE_THREAD_LIBS_INIT} ${JPEG_LIBRARIES} ${LibRaw_LIBRARIES} ${ZLIB_LIBRARIES})
++  target_link_libraries(indi_gphoto_ccd ${INDI_LIBRARIES} ${CFITSIO_LIBRARIES} ${GPHOTO2_LIBRARY} ${GPHOTO2_PORT_LIBRARY} ${CMAKE_THREAD_LIBS_INIT} ${JPEG_LIBRARIES} ${LibRaw_LIBRARIES} ${ZLIB_LIBRARIES})
+ 
+-install(TARGETS indi_gphoto_ccd RUNTIME DESTINATION bin )
++  install(TARGETS indi_gphoto_ccd RUNTIME DESTINATION bin )
+ 
+-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/make_gphoto_symlink.cmake
+-"execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink indi_gphoto_ccd \$ENV{DESTDIR}${BIN_INSTALL_DIR}/indi_canon_ccd)\n
++  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/make_gphoto_symlink.cmake
++  "execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink indi_gphoto_ccd \$ENV{DESTDIR}${BIN_INSTALL_DIR}/indi_canon_ccd)\n
+ execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink indi_gphoto_ccd \$ENV{DESTDIR}${BIN_INSTALL_DIR}/indi_nikon_ccd)\n
+ execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink indi_gphoto_ccd \$ENV{DESTDIR}${BIN_INSTALL_DIR}/indi_pentax_ccd)\n
+ execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink indi_gphoto_ccd \$ENV{DESTDIR}${BIN_INSTALL_DIR}/indi_sony_ccd)\n
+ execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink indi_gphoto_ccd \$ENV{DESTDIR}${BIN_INSTALL_DIR}/indi_fuji_ccd)\n")
+-set_target_properties(indi_gphoto_ccd PROPERTIES POST_INSTALL_SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/make_gphoto_symlink.cmake)
++  set_target_properties(indi_gphoto_ccd PROPERTIES POST_INSTALL_SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/make_gphoto_symlink.cmake)
++
++  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/indi_gphoto.xml DESTINATION ${INDI_DATA_DIR})
++endif ()
++
++add_executable(indi_kepler_fuji_ccd ${indigphoto_SRCS})
+ 
+-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/indi_gphoto.xml DESTINATION ${INDI_DATA_DIR})
++target_link_libraries(indi_kepler_fuji_ccd ${INDI_LIBRARIES} ${CFITSIO_LIBRARIES} ${GPHOTO2_LIBRARY} ${GPHOTO2_PORT_LIBRARY} ${CMAKE_THREAD_LIBS_INIT} ${JPEG_LIBRARIES} ${LibRaw_LIBRARIES} ${ZLIB_LIBRARIES})
++
++install(TARGETS indi_kepler_fuji_ccd RUNTIME DESTINATION bin )
+ 
+ # Build the camera test application
+-add_executable(gphoto_camera_test
++if (NOT KEPLER_BUILD_CUSTOM_FUJI_ONLY)
++  add_executable(gphoto_camera_test
+     ${CMAKE_CURRENT_SOURCE_DIR}/gphoto_camera_test.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/gphoto_driver.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/dsusbdriver.cpp
+-)
++  )
+ 
+-target_link_libraries(gphoto_camera_test
++  target_link_libraries(gphoto_camera_test
+     ${GPHOTO2_LIBRARY}
+     ${GPHOTO2_PORT_LIBRARY}
+     ${CMAKE_THREAD_LIBS_INIT}
+@@ -118,9 +137,10 @@ target_link_libraries(gphoto_camera_test
+     ${JPEG_LIBRARIES}
+     ${LibRaw_LIBRARIES}
+     ${ZLIB_LIBRARIES}
+-)
++  )
+ 
+-install(TARGETS gphoto_camera_test DESTINATION bin)
++  install(TARGETS gphoto_camera_test DESTINATION bin)
++endif ()
+ 
+ # Disable automount for DSLR cameras
+ IF (UNIX AND NOT APPLE AND INDI_INSTALL_UDEV_RULES)
+diff --git a/indi-gphoto/gphoto_ccd.cpp b/indi-gphoto/gphoto_ccd.cpp
+index 3e1ebbd7..749e0bf3 100644
+--- a/indi-gphoto/gphoto_ccd.cpp
++++ b/indi-gphoto/gphoto_ccd.cpp
+@@ -61,6 +61,11 @@ static const char *getProgName()
+ #endif
+ }
+ 
++static bool isKeplerFujiDriver()
++{
++    return !strcmp(getProgName(), "indi_kepler_fuji_ccd");
++}
++
+ 
+ typedef struct
+ {
+@@ -75,6 +80,7 @@ static CamDriverInfo camInfos[] = { { "indi_gphoto_ccd", "GPhoto CCD", "GPhoto"
+     { "indi_pentax_ccd", "Pentax DSLR", "Pentax" },
+     { "indi_sony_ccd", "Sony DSLR", "Sony" },
+     { "indi_fuji_ccd", "Fuji DSLR", "Fuji" },
++    { "indi_kepler_fuji_ccd", "Kepler Fuji DSLR", "Fuji" },
+     { nullptr, nullptr, nullptr }
+ };
+ 
+@@ -144,33 +150,47 @@ static class Loader
+                     char prefix[MAXINDINAME];
+                     char name[MAXINDINAME];
+                     bool modelFound = false;
++                    const auto currentDriverExec = getProgName();
++                    const CamDriverInfo *preferredInfo = nullptr;
++
++                    auto registerCamera = [&](const CamDriverInfo *camInfo)
++                    {
++                        snprintf(prefix, sizeof(prefix), "%s", camInfo->driver);
++
++                        if (std::find(cameraNames.begin(), cameraNames.end(), camInfo->model) == cameraNames.end())
++                            snprintf(name, MAXINDIDEVICE, "%s %s", prefix, model + strlen(camInfo->model) + 1);
++                        else
++                            snprintf(name, MAXINDIDEVICE, "%s %s %d", prefix, model + strlen(camInfo->model) + 1,
++                                     static_cast<int>(std::count(cameraNames.begin(), cameraNames.end(), camInfo->model)) + 1);
++
++                        IDLog("Creating a new driver with model %s on port %s\n", model, port);
++                        std::unique_ptr<GPhotoCCD> camera(new GPhotoCCD(model, port));
++                        camera->setDeviceName(name);
++                        cameras.push_back(std::move(camera));
++                        cameraNames.push_back(camInfo->model);
++                        return true;
++                    };
+ 
+                     for (int j = 0; camInfos[j].exec != nullptr; j++)
+                     {
+-                        if (strstr(model, camInfos[j].model))
++                        if (!strcmp(camInfos[j].exec, currentDriverExec))
+                         {
+-                            snprintf(prefix, sizeof(prefix), "%s", camInfos[j].driver);
+-
+-                            // If if the model was already registered for a prior camera in case we are using
+-                            // two identical models
+-                            if (std::find(cameraNames.begin(), cameraNames.end(), camInfos[j].model) == cameraNames.end())
+-                                snprintf(name, MAXINDIDEVICE, "%s %s", prefix, model + strlen(camInfos[j].model) + 1);
+-                            else
+-                                snprintf(name, MAXINDIDEVICE, "%s %s %d", prefix, model + strlen(camInfos[j].model) + 1,
+-                                         static_cast<int>(std::count(cameraNames.begin(), cameraNames.end(), camInfos[j].model)) + 1);
+-
+-                            IDLog("Creating a new driver with model %s on port %s\n", model, port);
+-                            std::unique_ptr<GPhotoCCD> camera(new GPhotoCCD(model, port));
+-                            camera->setDeviceName(name);
+-                            cameras.push_back(std::move(camera));
+-
+-                            modelFound = true;
+-                            // Store camera model in list to check for duplicates
+-                            cameraNames.push_back(camInfos[j].model);
++                            preferredInfo = &camInfos[j];
+                             break;
+                         }
+                     }
+ 
++                    if (preferredInfo && strstr(model, preferredInfo->model))
++                        modelFound = registerCamera(preferredInfo);
++
++                    for (int j = 0; modelFound == false && camInfos[j].exec != nullptr; j++)
++                    {
++                        if (strstr(model, camInfos[j].model))
++                        {
++                            modelFound = registerCamera(&camInfos[j]);
++                        }
++                    }
++
+                     if (modelFound == false)
+                     {
+                         IDLog("Failed to find model %s in supported cameras.\n", model);
+@@ -254,6 +274,9 @@ GPhotoCCD::~GPhotoCCD()
+ ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+ const char * GPhotoCCD::getDefaultName()
+ {
++    if (isKeplerFujiDriver())
++        return "Kepler Fuji DSLR";
++
+     return "GPhoto CCD";
+ }
+ 
+@@ -298,6 +321,7 @@ bool GPhotoCCD::initProperties()
+     AutoFocusSP.fill(getDeviceName(), "Auto Focus", "Auto Focus", FOCUS_TAB, IP_RW, ISR_1OFMANY, 0, IPS_IDLE);
+ 
+     const auto isNikon = strstr(getDeviceName(), "Nikon") != nullptr;
++    const auto useKeplerFujiDefaults = isKeplerFujiDriver();
+ 
+     // Nikon should use SD card by default
+     CaptureTargetSP[CAPTURE_INTERNAL_RAM].fill("RAM", "RAM", ISS_ON);
+@@ -306,19 +330,19 @@ bool GPhotoCCD::initProperties()
+                          IPS_IDLE);
+     CaptureTargetSP.load();
+ 
+-    SDCardImageSP[SD_CARD_SAVE_IMAGE].fill("Save", "Save", ISS_ON);
+-    SDCardImageSP[SD_CARD_DELETE_IMAGE].fill("Delete", "Delete", ISS_OFF);
++    SDCardImageSP[SD_CARD_SAVE_IMAGE].fill("Save", "Save", useKeplerFujiDefaults ? ISS_OFF : ISS_ON);
++    SDCardImageSP[SD_CARD_DELETE_IMAGE].fill("Delete", "Delete", useKeplerFujiDefaults ? ISS_ON : ISS_OFF);
+     SDCardImageSP[SD_CARD_IGNORE_IMAGE].fill("Ignore", "Ignore", ISS_OFF);
+     SDCardImageSP.fill(getDeviceName(), "CCD_SD_CARD_ACTION", "SD Image", IMAGE_SETTINGS_TAB, IP_RW, ISR_1OFMANY, 0, IPS_IDLE);
+ 
+     // Download Timeout
+-    DownloadTimeoutNP[0].fill("VALUE", "Seconds", "%.f", 0, 300, 30, 60);
++    DownloadTimeoutNP[0].fill("VALUE", "Seconds", "%.f", 0, 300, 30, useKeplerFujiDefaults ? 120 : 60);
+     DownloadTimeoutNP.fill(getDeviceName(), "CCD_DOWNLOAD_TIMEOUT", "Download Timeout", OPTIONS_TAB, IP_RW, 60, IPS_IDLE);
+     DownloadTimeoutNP.load();
+ 
+-    // Nikon should have force bulb off by default.
+-    ForceBULBSP[INDI_ENABLED].fill("On", "On", isNikon ? ISS_OFF : ISS_ON);
+-    ForceBULBSP[INDI_DISABLED].fill("Off", "Off", isNikon ? ISS_ON : ISS_OFF);
++    // Nikon and the Kepler Fuji fork should have force bulb off by default.
++    ForceBULBSP[INDI_ENABLED].fill("On", "On", (isNikon || useKeplerFujiDefaults) ? ISS_OFF : ISS_ON);
++    ForceBULBSP[INDI_DISABLED].fill("Off", "Off", (isNikon || useKeplerFujiDefaults) ? ISS_ON : ISS_OFF);
+     ForceBULBSP.fill(getDeviceName(), "CCD_FORCE_BLOB", "Force BULB", OPTIONS_TAB, IP_RW, ISR_1OFMANY, 0, IPS_IDLE);
+ 
+     // Upload File
+@@ -885,6 +909,7 @@ bool GPhotoCCD::Connect()
+ 
+         gphoto_get_minmax_exposure(gphotodrv, &min_exposure, &max_exposure);
+         PrimaryCCD.setMinMaxStep("CCD_EXPOSURE", "CCD_EXPOSURE_VALUE", min_exposure, max_exposure, 1, true);
++        gphoto_set_download_timeout(gphotodrv, DownloadTimeoutNP[0].getValue());
+     }
+ 
+     const char * fmts[] = { "Custom" };
+@@ -984,6 +1009,27 @@ bool GPhotoCCD::Connect()
+         CaptureTargetSP.setState(IPS_OK);
+     }
+ 
++    if (!isSimulation() && isKeplerFujiDriver())
++    {
++        gphoto_force_bulb(gphotodrv, false);
++        ForceBULBSP.reset();
++        ForceBULBSP[INDI_DISABLED].setState(ISS_ON);
++        ForceBULBSP.setState(IPS_OK);
++
++        gphoto_handle_sdcard_image(gphotodrv, DELETE_IMAGE);
++        SDCardImageSP.reset();
++        SDCardImageSP[SD_CARD_DELETE_IMAGE].setState(ISS_ON);
++        SDCardImageSP.setState(IPS_OK);
++
++        if (CaptureTargetSP.getState() == IPS_OK && captureTarget != CAPTURE_INTERNAL_RAM &&
++                gphoto_set_capture_target(gphotodrv, CAPTURE_INTERNAL_RAM) == GP_OK)
++        {
++            CaptureTargetSP.reset();
++            CaptureTargetSP[CAPTURE_INTERNAL_RAM].setState(ISS_ON);
++            CaptureTargetSP.setState(IPS_OK);
++        }
++    }
++
+     if (isSimulation())
+         m_CanFocus = false;
+     else
+diff --git a/indi-gphoto/gphoto_driver.cpp b/indi-gphoto/gphoto_driver.cpp
+index 3da8d72c..39a9d80b 100644
+--- a/indi-gphoto/gphoto_driver.cpp
++++ b/indi-gphoto/gphoto_driver.cpp
+@@ -176,6 +176,31 @@ struct _gphoto_driver
+     pthread_cond_t signal;
+ };
+ 
++static bool is_fuji_camera(const gphoto_driver *gphoto)
++{
++    return gphoto && gphoto->manufacturer && strcasestr(gphoto->manufacturer, "Fuji") != nullptr;
++}
++
++static void attempt_fuji_session_recovery(gphoto_driver *gphoto, const char *reason)
++{
++    if (!is_fuji_camera(gphoto))
++        return;
++
++    DEBUGFDEVICE(device, INDI::Logger::DBG_WARNING, "Attempting Fuji session recovery after %s.", reason);
++
++    auto result = gp_camera_exit(gphoto->camera, gphoto->context);
++    if (result != GP_OK)
++        DEBUGFDEVICE(device, INDI::Logger::DBG_WARNING, "Fuji session shutdown during recovery failed: %s", gp_result_as_string(result));
++
++    usleep(500000);
++
++    result = gp_camera_init(gphoto->camera, gphoto->context);
++    if (result != GP_OK)
++        DEBUGFDEVICE(device, INDI::Logger::DBG_ERROR, "Fuji session recovery failed: %s", gp_result_as_string(result));
++    else
++        DEBUGDEVICE(device, INDI::Logger::DBG_SESSION, "Fuji session recovery succeeded.");
++}
++
+ enum
+ {
+     DSLR_CMD_BULB_CAPTURE = 0x01,
+@@ -850,6 +875,7 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
+         DEBUGFDEVICE(device, INDI::Logger::DBG_ERROR, "Error downloading image from camera: %s", gp_result_as_string(result));
+         gp_file_free(gphoto->camerafile);
+         gphoto->camerafile = nullptr;
++        attempt_fuji_session_recovery(gphoto, "image download failure");
+         return result;
+     }
+ 
+@@ -1388,6 +1414,8 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+         //Set exposure back to original value
+         // JM 2018-08-06: Why do we really need to reset values here?
+         //reset_settings(gphoto);
++        if (result != GP_OK)
++            attempt_fuji_session_recovery(gphoto, "capture download failure");
+       
+         // A ptp reset is needed by Sony A7II and A7III
+         if (strstr(gphoto->manufacturer, "Sony") && strstr(gphoto->model, "ILCE"))
+@@ -1421,6 +1449,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+                 usleep(250000);
+                 continue;
+             }
++            attempt_fuji_session_recovery(gphoto, "event wait failure");
+             return -1;
+         }
+ 
+@@ -1435,7 +1464,11 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+                 DEBUGDEVICE(device, INDI::Logger::DBG_DEBUG, "File added event completed.");
+                 fn = static_cast<CameraFilePath *>(data);
+                 if (gphoto->handle_sdcard_image != IGNORE_IMAGE)
+-                    download_image(gphoto, fn, fd);
++                {
++                    result = download_image(gphoto, fn, fd);
++                    if (result != GP_OK)
++                        return result;
++                }
+ 
+                 downloadComplete = true;
+                 // Wait 1 second for GP_EVENT_CAPTURE_COMPLETE
+@@ -1469,6 +1502,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+ 
+                 // Give up as we timed out.
+                 DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "Event timed out after %d ms (elapsed: %d ms).", waitMS, elapsed);
++                attempt_fuji_session_recovery(gphoto, "event timeout");
+                 return -1;
+             }
+             break;
+@@ -2247,8 +2281,9 @@ int gphoto_start_preview(gphoto_driver *gphoto)
+ 
+ int gphoto_stop_preview(gphoto_driver *gphoto)
+ {
+-    // Olympus & Sony cameras support streaming but without viewfinder_widget
+-    if (strcasestr(gphoto->manufacturer, "OLYMPUS") || strcasestr(gphoto->manufacturer, "Sony Corporation"))
++    // Olympus, Sony, and Fuji cameras support streaming but without viewfinder_widget
++    if (strcasestr(gphoto->manufacturer, "OLYMPUS") || strcasestr(gphoto->manufacturer, "Sony Corporation") ||
++            strcasestr(gphoto->manufacturer, "Fuji"))
+         return GP_OK;
+ 
+     // If viewfinder not found, nothing to do

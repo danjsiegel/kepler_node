@@ -24,7 +24,9 @@ UI_PORT=8501
 INDI_PORT=7624
 INDIWEBMANAGER_PORT=8624
 INDI_PROFILE_NAME="${KEPLER_INDI_PROFILE_NAME:-Kepler-Starter-Rig}"
-INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,Fuji DSLR,Fuji Focus Bridge}"
+FUJI_CAMERA_DRIVER_LABEL="${KEPLER_FUJI_CAMERA_DRIVER_LABEL:-Kepler Fuji DSLR}"
+INDI_GPHOTO_UPSTREAM_REF="${KEPLER_INDI_GPHOTO_UPSTREAM_REF:-99e26e1137dc32263f0470280e45ba3d9b53d3f8}"
+INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL},Fuji Focus Bridge}"
 INDIWEBMANAGER_HOME="${KEPLER_INDIWEBMANAGER_HOME:-/var/lib/indiwebmanager}"
 
 # ------------------------------------------------------------------ #
@@ -102,6 +104,39 @@ build_and_install_fuji_focus_bridge() {
         || fail "Fuji focus bridge install failed"
 }
 
+build_and_install_kepler_fuji_ccd() {
+    local work_root="/tmp/kepler-indi-gphoto-${INDI_GPHOTO_UPSTREAM_REF:0:12}"
+    local repo_dir="${work_root}/src"
+    local build_dir="${work_root}/build"
+    local patch_file="${SCRIPT_DIR}/indi/kepler_fuji_ccd/patches/0001-kepler-fuji-x-t5-hardening.patch"
+    local xml_file="${SCRIPT_DIR}/indi/kepler_fuji_ccd/kepler_fuji_ccd.xml"
+
+    [[ -f "${patch_file}" ]] || fail "Kepler Fuji DSLR patch file is missing at ${patch_file}"
+    [[ -f "${xml_file}" ]] || fail "Kepler Fuji DSLR XML metadata is missing at ${xml_file}"
+
+    rm -rf "${work_root}"
+
+    git clone --depth 1 https://github.com/indilib/indi-3rdparty.git "${repo_dir}" \
+        || fail "Failed to clone indi-3rdparty upstream source"
+    git -C "${repo_dir}" fetch --depth 1 origin "${INDI_GPHOTO_UPSTREAM_REF}" \
+        || fail "Failed to fetch indi-3rdparty revision ${INDI_GPHOTO_UPSTREAM_REF}"
+    git -C "${repo_dir}" checkout --detach "${INDI_GPHOTO_UPSTREAM_REF}" \
+        || fail "Failed to checkout indi-3rdparty revision ${INDI_GPHOTO_UPSTREAM_REF}"
+    git -C "${repo_dir}" apply "${patch_file}" \
+        || fail "Failed to apply the Kepler Fuji DSLR patchset"
+
+    cmake -S "${repo_dir}/indi-gphoto" -B "${build_dir}" \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DKEPLER_BUILD_CUSTOM_FUJI_ONLY=ON \
+        || fail "Kepler Fuji DSLR CMake configure failed"
+    cmake --build "${build_dir}" -j"$(nproc)" \
+        || fail "Kepler Fuji DSLR build failed"
+    cmake --install "${build_dir}" \
+        || fail "Kepler Fuji DSLR install failed"
+    install -D -m 0644 "${xml_file}" /usr/share/indi/kepler_fuji_ccd.xml \
+        || fail "Kepler Fuji DSLR XML install failed"
+}
+
 wait_for_indiwebmanager_api() {
     local attempts=0
     local max_attempts=12
@@ -162,11 +197,18 @@ start_indiwebmanager_profile() {
 }
 
 disable_desktop_camera_claimers() {
-    local user_unit="gvfs-gphoto2-volume-monitor.service"
+    local user_units=(
+        "gvfs-gphoto2-volume-monitor.service"
+        "gvfs-udisks2-volume-monitor.service"
+        "gvfs-mtp-volume-monitor.service"
+    )
+    local runtime_dir uid user_name user_unit
 
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl --global mask "${user_unit}" >/dev/null 2>&1 \
-            || warn "Could not globally mask ${user_unit}; desktop sessions may still claim USB cameras"
+        for user_unit in "${user_units[@]}"; do
+            systemctl --global mask "${user_unit}" >/dev/null 2>&1 \
+                || warn "Could not globally mask ${user_unit}; desktop sessions may still claim USB cameras"
+        done
     fi
 
     if command -v runuser >/dev/null 2>&1; then
@@ -175,15 +217,29 @@ disable_desktop_camera_claimers() {
             uid="$(basename "${runtime_dir}")"
             user_name="$(id -nu "${uid}" 2>/dev/null || true)"
             [[ -n "${user_name}" && -S "${runtime_dir}/bus" ]] || continue
+            for user_unit in "${user_units[@]}"; do
+                runuser -u "${user_name}" -- env \
+                    XDG_RUNTIME_DIR="${runtime_dir}" \
+                    DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+                    systemctl --user mask --now "${user_unit}" >/dev/null 2>&1 || true
+            done
             runuser -u "${user_name}" -- env \
                 XDG_RUNTIME_DIR="${runtime_dir}" \
                 DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
-                systemctl --user mask --now "${user_unit}" >/dev/null 2>&1 || true
+                gsettings set org.gnome.desktop.media-handling automount false >/dev/null 2>&1 || true
+            runuser -u "${user_name}" -- env \
+                XDG_RUNTIME_DIR="${runtime_dir}" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+                gsettings set org.gnome.desktop.media-handling automount-open false >/dev/null 2>&1 || true
         done
     fi
 
     pkill -x gvfsd-gphoto2 >/dev/null 2>&1 || true
     pkill -f '/usr/libexec/gvfs-gphoto2-volume-monitor' >/dev/null 2>&1 || true
+    pkill -f '/usr/libexec/gvfs-udisks2-volume-monitor' >/dev/null 2>&1 || true
+    pkill -f '/usr/libexec/gvfs-mtp-volume-monitor' >/dev/null 2>&1 || true
+    pkill -x gvfsd >/dev/null 2>&1 || true
+    pkill -x gvfsd-fuse >/dev/null 2>&1 || true
 }
 
 install_fuji_camera_keepalive() {
@@ -232,7 +288,8 @@ ATTACH
     cat > /etc/udev/rules.d/99-kepler-camera.rules << 'RULES'
 # Kepler: open a PTP session when a Fujifilm camera is connected so the body
 # recognises an active host and suppresses its auto-power-off timer.
-SUBSYSTEM=="usb", ATTR{idVendor}=="04cb", ACTION=="add", \
+# Also keep desktop auto-mounters away from the body; INDI/gphoto own it.
+SUBSYSTEM=="usb", ATTR{idVendor}=="04cb", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0", ACTION=="add", \
     RUN+="/usr/bin/systemd-run --no-block --unit=kepler-camera-attach /usr/local/bin/kepler-camera-attach"
 RULES
 
@@ -458,12 +515,16 @@ ensure_indiwebmanager_installed
 
 ok "Dependencies synced"
 
-log "Step 3a: Ensuring Fuji focus bridge build prerequisites..."
+log "Step 3a: Ensuring Fuji camera driver build prerequisites..."
 apt-get update -qq
-apt-get install -y --no-install-recommends build-essential cmake libindi-dev gphoto2 \
-    || fail "Fuji focus bridge build prerequisites could not be installed"
+apt-get install -y --no-install-recommends build-essential cmake pkg-config git gphoto2 libcfitsio-dev libgphoto2-dev libindi-dev libjpeg-dev libraw-dev libusb-1.0-0-dev zlib1g-dev \
+    || fail "Fuji camera driver build prerequisites could not be installed"
 
-log "Step 3aa: Building and installing Fuji focus bridge sidecar..."
+log "Step 3aa: Building and installing Kepler Fuji DSLR capture driver..."
+build_and_install_kepler_fuji_ccd
+ok "Kepler Fuji DSLR capture driver installed"
+
+log "Step 3ab: Building and installing Fuji focus bridge sidecar..."
 build_and_install_fuji_focus_bridge
 ok "Fuji focus bridge sidecar installed"
 

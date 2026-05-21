@@ -269,6 +269,44 @@ def test_bootstrap_and_upgrade_build_fuji_focus_bridge_sidecar() -> None:
         )
 
 
+def test_kepler_fuji_driver_bundle_exists() -> None:
+    assert (_REPO_ROOT / "indi/kepler_fuji_ccd/kepler_fuji_ccd.xml").exists(), (
+        "the repo must ship XML metadata for the custom Kepler Fuji DSLR driver so indiwebmanager can discover it"
+    )
+    assert (_REPO_ROOT / "indi/kepler_fuji_ccd/patches/0001-kepler-fuji-x-t5-hardening.patch").exists(), (
+        "the repo must ship the upstream patchset for the custom Kepler Fuji DSLR build"
+    )
+
+
+def test_bootstrap_and_upgrade_build_kepler_fuji_camera_driver() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "KEPLER_FUJI_CAMERA_DRIVER_LABEL" in content, (
+            f"{script_name} must make the custom Fuji camera driver label overridable"
+        )
+        assert "KEPLER_INDI_GPHOTO_UPSTREAM_REF" in content, (
+            f"{script_name} must pin the upstream indi-gphoto revision used for the custom Fuji build"
+        )
+        assert "indi/kepler_fuji_ccd/patches/0001-kepler-fuji-x-t5-hardening.patch" in content, (
+            f"{script_name} must apply the in-repo Kepler Fuji DSLR patchset to upstream indi-gphoto"
+        )
+        assert "git clone --depth 1 https://github.com/indilib/indi-3rdparty.git" in content, (
+            f"{script_name} must build the custom Fuji driver from upstream indi-gphoto instead of checking in a forked code dump"
+        )
+        assert 'git -C "${repo_dir}" apply "${patch_file}"' in content, (
+            f"{script_name} must apply the Kepler Fuji DSLR patchset before building the custom camera driver"
+        )
+        assert 'cmake -S "${repo_dir}/indi-gphoto" -B "${build_dir}"' in content, (
+            f"{script_name} must configure the upstream indi-gphoto source tree before building the custom Fuji target"
+        )
+        assert "KEPLER_BUILD_CUSTOM_FUJI_ONLY=ON" in content, (
+            f"{script_name} must build only the custom Fuji binary so the distro-provided stock gphoto drivers are not overwritten"
+        )
+        assert "/usr/share/indi/kepler_fuji_ccd.xml" in content, (
+            f"{script_name} must install the Kepler Fuji DSLR XML metadata so indiwebmanager can discover the custom driver"
+        )
+
+
 def test_bootstrap_and_upgrade_wipe_and_recreate_starter_rig_indi_profile() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()
@@ -278,8 +316,8 @@ def test_bootstrap_and_upgrade_wipe_and_recreate_starter_rig_indi_profile() -> N
         assert "KEPLER_INDI_PROFILE_DRIVERS" in content, (
             f"{script_name} must allow the managed indiwebmanager driver set to be overridden"
         )
-        assert "ES iEXOS100 PMC-Eight,Fuji DSLR,Fuji Focus Bridge" in content, (
-            f"{script_name} must default the managed profile to the concrete starter-rig drivers once indiwebmanager has a real HOME-backed state directory"
+        assert 'ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL},Fuji Focus Bridge' in content, (
+            f"{script_name} must default the managed profile to the Kepler Fuji DSLR fork plus focus bridge once the custom camera driver is installed"
         )
         assert "/api/drivers" in content, (
             f"{script_name} must validate requested driver labels against indiwebmanager's documented driver catalog instead of bypassing the supported control surface"
@@ -341,14 +379,40 @@ def test_bootstrap_and_upgrade_disable_gvfs_camera_auto_claimer() -> None:
         assert "gvfs-gphoto2-volume-monitor.service" in content, (
             f"{script_name} must disable the GVFS gphoto monitor so desktop sessions do not steal USB cameras"
         )
+        assert "gvfs-udisks2-volume-monitor.service" in content, (
+            f"{script_name} must disable the GVFS UDisks volume monitor so desktop sessions do not auto-mount Fuji storage"
+        )
+        assert "gvfs-mtp-volume-monitor.service" in content, (
+            f"{script_name} must disable the GVFS MTP volume monitor so desktop sessions do not claim the camera as removable media"
+        )
         assert "systemctl --global mask" in content, (
-            f"{script_name} must globally mask the GVFS gphoto monitor for future desktop sessions"
+            f"{script_name} must globally mask desktop camera claimers for future desktop sessions"
         )
         assert "systemctl --user mask --now" in content, (
-            f"{script_name} must stop and mask the GVFS gphoto monitor in active user sessions"
+            f"{script_name} must stop and mask desktop camera claimers in active user sessions"
+        )
+        assert "gsettings set org.gnome.desktop.media-handling automount false" in content, (
+            f"{script_name} must disable GNOME media automount in active desktop sessions"
         )
         assert "pkill -x gvfsd-gphoto2" in content, (
             f"{script_name} must kill an already-running gvfsd-gphoto2 process so the camera is immediately releasable"
+        )
+        assert "pkill -f '/usr/libexec/gvfs-udisks2-volume-monitor'" in content, (
+            f"{script_name} must kill the GVFS UDisks monitor so an already auto-mounted Fuji body is releasable immediately"
+        )
+
+
+def test_bootstrap_and_upgrade_mark_fuji_usb_devices_to_skip_udisks() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "99-kepler-camera.rules" in content, (
+            f"{script_name} must manage the Fuji camera udev rule"
+        )
+        assert 'ENV{UDISKS_IGNORE}="1"' in content, (
+            f"{script_name} must mark Fujifilm USB devices so UDisks ignores them"
+        )
+        assert 'ENV{UDISKS_AUTO}="0"' in content, (
+            f"{script_name} must disable UDisks automount for Fujifilm USB devices"
         )
 
 
