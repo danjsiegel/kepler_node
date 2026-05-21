@@ -84,7 +84,7 @@ index 10434155..70b6bc80 100644
  # Disable automount for DSLR cameras
  IF (UNIX AND NOT APPLE)
 diff --git a/indi-gphoto/gphoto_ccd.cpp b/indi-gphoto/gphoto_ccd.cpp
-index a8ba5998..9cb90739 100644
+index a8ba5998..e2956fb2 100644
 --- a/indi-gphoto/gphoto_ccd.cpp
 +++ b/indi-gphoto/gphoto_ccd.cpp
 @@ -44,6 +44,11 @@
@@ -240,7 +240,7 @@ index a8ba5998..9cb90739 100644
      if (isSimulation())
          m_CanFocus = false;
      else
-@@ -973,6 +1039,29 @@ bool GPhotoCCD::Disconnect()
+@@ -973,6 +1039,32 @@ bool GPhotoCCD::Disconnect()
  
  bool GPhotoCCD::StartExposure(float duration)
  {
@@ -257,6 +257,9 @@ index a8ba5998..9cb90739 100644
 +                if (activeIndex >= 0 && activeIndex < captureMode->widget->choice_cnt)
 +                {
 +                    const char * activeChoice = captureMode->widget->choices[activeIndex];
++                    if (is_kepler_fuji_driver() && activeChoice)
++                        LOGF_INFO("Fuji capture mode at exposure start: %s", activeChoice);
++
 +                    if (activeChoice && strcasestr(activeChoice, "self-timer"))
 +                    {
 +                        LOG_ERROR("Fuji capture mode is set to Self-timer. Change the camera body to a normal still-capture mode before exposing.");
@@ -271,7 +274,7 @@ index a8ba5998..9cb90739 100644
      {
          LOG_INFO("Please update the CCD Information in the Image Info section before "
 diff --git a/indi-gphoto/gphoto_driver.cpp b/indi-gphoto/gphoto_driver.cpp
-index 081d5800..237e56e5 100644
+index 081d5800..1b28f8c7 100644
 --- a/indi-gphoto/gphoto_driver.cpp
 +++ b/indi-gphoto/gphoto_driver.cpp
 @@ -186,6 +186,31 @@ enum
@@ -331,9 +334,12 @@ index 081d5800..237e56e5 100644
  
      while (1)
      {
-@@ -1395,8 +1424,9 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1393,10 +1422,11 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+ 
+         if (result != GP_OK)
          {
-             DEBUGDEVICE(device, INDI::Logger::DBG_WARNING, "Could not wait for event.");
+-            DEBUGDEVICE(device, INDI::Logger::DBG_WARNING, "Could not wait for event.");
++            DEBUGFDEVICE(device, INDI::Logger::DBG_WARNING, "Could not wait for event: %s", gp_result_as_string(result));
              timeoutCounter++;
 -            if (timeoutCounter >= 10)
 +            if (timeoutCounter >= maxTimeoutCounter)
