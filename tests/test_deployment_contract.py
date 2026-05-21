@@ -116,10 +116,10 @@ def test_upgrade_sh_reads_release_metadata() -> None:
 def test_upgrade_sh_defines_indi_port_for_service_template() -> None:
     content = (_REPO_ROOT / "upgrade.sh").read_text()
     assert "INDI_PORT=7624" in content, (
-        "upgrade.sh must define INDI_PORT before rendering the indiserver service template"
+        "upgrade.sh must retain the standard INDI port for broker-managed profiles"
     )
-    assert "indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}" in content, (
-        "upgrade.sh must render the indiserver unit with the configured INDI port"
+    assert "INDIWEBMANAGER_PORT=8624" in content, (
+        "upgrade.sh must define the indiwebmanager API port for broker health checks"
     )
 
 
@@ -239,31 +239,30 @@ def test_bootstrap_sh_makes_uv_available_after_installer_runs() -> None:
     ), "bootstrap.sh must fail clearly if uv still is not resolvable after installation"
 
 
-def test_bootstrap_sh_field_fallback_creates_indiserver_service() -> None:
+def test_bootstrap_sh_installs_indiwebmanager_via_uv_tool() -> None:
     content = (_REPO_ROOT / "bootstrap.sh").read_text()
-    indiserver_write_pos = content.find("indiserver.service")
-    assert indiserver_write_pos != -1, "bootstrap.sh must write indiserver.service"
-    indi_section = content[max(0, indiserver_write_pos - 300) : indiserver_write_pos + 100]
-    assert 'elif [[ "${PROFILE}" == "headless-node"' not in indi_section, (
-        "bootstrap.sh must provision indiserver.service for all profiles, "
-        "not only headless-node (field-fallback is a superset per spec line 1661)"
+    assert "ensure_indiwebmanager_installed()" in content, (
+        "bootstrap.sh must centralize indiwebmanager installation so the broker binary is provisioned deterministically"
+    )
+    assert "uv tool install --force indiweb" in content, (
+        "bootstrap.sh must install indiweb via uv tool so the broker is available even when no distro package exists"
+    )
+    assert "/usr/local/bin/indi-web" in content, (
+        "bootstrap.sh must stabilize the indi-web binary path for systemd"
     )
 
 
-def test_bootstrap_and_upgrade_use_fifo_mode_for_generic_indiserver() -> None:
+def test_bootstrap_and_upgrade_manage_indiwebmanager_service() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()
-        assert "RuntimeDirectory=kepler-indiserver" in content, (
-            f"{script_name} must provision a runtime directory for the INDI control FIFO"
+        assert "indiwebmanager.service" in content, (
+            f"{script_name} must provision indiwebmanager.service for the supported brokered INDI path"
         )
-        assert "ExecStartPre=/usr/bin/mkfifo /run/kepler-indiserver/control.fifo" in content, (
-            f"{script_name} must create the INDI control FIFO before startup"
+        assert "ExecStart=${indiweb_bin}" in content, (
+            f"{script_name} must render the indiwebmanager unit using the resolved indi-web binary path"
         )
-        assert (
-            "ExecStart=/usr/bin/indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}"
-            in content
-        ), (
-            f"{script_name} must run indiserver in FIFO mode so the generic service stays up without hardcoded drivers"
+        assert "systemctl disable indiserver" in content, (
+            f"{script_name} must disable any legacy indiserver service so it cannot conflict with the broker on port 7624"
         )
 
 
@@ -289,20 +288,20 @@ def test_upgrade_sh_refreshes_managed_service_units() -> None:
     assert "Step 3b: Refreshing managed service units" in content, (
         "upgrade.sh should refresh managed service units before restart so legacy broken units are repaired"
     )
-    assert 'write_indiserver_service "/etc/systemd/system/indiserver.service"' in content, (
-        "upgrade.sh must rewrite the canonical indiserver.service during upgrades"
+    assert 'write_indiwebmanager_service "/etc/systemd/system/indiwebmanager.service" "$(command -v indi-web)"' in content, (
+        "upgrade.sh must rewrite the canonical indiwebmanager.service during upgrades"
     )
     assert "Step 3c: Preventing desktop camera auto-claimers" in content, (
         "upgrade.sh should disable GVFS camera auto-claimers before restarting services"
     )
 
 
-def test_bootstrap_sh_field_fallback_includes_indiserver_in_service_ordering() -> None:
+def test_bootstrap_sh_field_fallback_includes_indiwebmanager_in_service_ordering() -> None:
     content = (_REPO_ROOT / "bootstrap.sh").read_text()
-    assert "indiserver.service" in content
-    service_wants_match = re.search(r'SERVICE_WANTS="[^"]*indiserver\.service[^"]*"', content)
+    assert "indiwebmanager.service" in content
+    service_wants_match = re.search(r'SERVICE_WANTS="[^"]*indiwebmanager\.service[^"]*"', content)
     assert service_wants_match is not None, (
-        "bootstrap.sh SERVICE_WANTS must include indiserver.service for all profiles"
+        "bootstrap.sh SERVICE_WANTS must include indiwebmanager.service for all profiles"
     )
     pre_block = content[: service_wants_match.start()]
     last_if = pre_block.rfind('if [[ "${PROFILE}"')
@@ -311,16 +310,19 @@ def test_bootstrap_sh_field_fallback_includes_indiserver_in_service_ordering() -
     if gating_pos != -1:
         gating_line = content[gating_pos : gating_pos + 60]
         assert "headless-node" not in gating_line, (
-            "bootstrap.sh SERVICE_WANTS indiserver.service must apply to all profiles, "
+            "bootstrap.sh SERVICE_WANTS indiwebmanager.service must apply to all profiles, "
             "not be gated behind headless-node"
         )
 
 
-def test_bootstrap_sh_health_check_verifies_indiserver_service_active() -> None:
+def test_bootstrap_sh_health_check_verifies_indiwebmanager_service_active() -> None:
     content = (_REPO_ROOT / "bootstrap.sh").read_text()
-    assert "systemctl is-active --quiet indiserver" in content, (
-        "bootstrap.sh health checks must verify indiserver service is active, "
+    assert "systemctl is-active --quiet indiwebmanager" in content, (
+        "bootstrap.sh health checks must verify indiwebmanager service is active, "
         "not only that the binary exists"
+    )
+    assert "/api/server/status" in content, (
+        "bootstrap.sh health checks must verify the indiwebmanager HTTP API is reachable"
     )
 
 
@@ -350,25 +352,30 @@ def test_upgrade_sh_preflight_checks_supported_from_versions() -> None:
     )
 
 
-def test_upgrade_sh_stops_and_restarts_indiserver() -> None:
+def test_upgrade_sh_stops_legacy_indiserver_and_restarts_indiwebmanager() -> None:
     content = (_REPO_ROOT / "upgrade.sh").read_text()
     assert "systemctl stop indiserver" in content, (
-        "upgrade.sh must stop indiserver as part of managed-service shutdown "
-        "(release.json lists indiserver in managed_services)"
+        "upgrade.sh must stop any legacy indiserver service during shutdown to avoid broker conflicts"
     )
-    assert "systemctl start indiserver" in content, (
-        "upgrade.sh must start indiserver as part of managed-service restart "
-        "(release.json lists indiserver in managed_services)"
+    assert "systemctl stop indiwebmanager" in content, (
+        "upgrade.sh must stop indiwebmanager as part of managed-service shutdown"
+    )
+    assert "systemctl start indiwebmanager" in content, (
+        "upgrade.sh must start indiwebmanager as part of managed-service restart"
     )
     stop_indi_pos = content.find("systemctl stop indiserver")
-    start_indi_pos = content.find("systemctl start indiserver")
+    stop_broker_pos = content.find("systemctl stop indiwebmanager")
+    start_broker_pos = content.find("systemctl start indiwebmanager")
     start_kepler_pos = content.find("systemctl start kepler-node")
     stop_kepler_pos = content.find("systemctl stop kepler-node")
     assert stop_indi_pos > stop_kepler_pos, (
-        "upgrade.sh must stop kepler-node before indiserver (dependency order)"
+        "upgrade.sh must stop kepler-node before any legacy indiserver service (dependency order)"
     )
-    assert start_indi_pos < start_kepler_pos, (
-        "upgrade.sh must start indiserver before kepler-node (dependency order)"
+    assert stop_broker_pos > stop_kepler_pos, (
+        "upgrade.sh must stop kepler-node before indiwebmanager (dependency order)"
+    )
+    assert start_broker_pos < start_kepler_pos, (
+        "upgrade.sh must start indiwebmanager before kepler-node (dependency order)"
     )
 
 

@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEPLER_PORT=8000
 UI_PORT=8501
 INDI_PORT=7624
+INDIWEBMANAGER_PORT=8624
 
 # ------------------------------------------------------------------ #
 # Helpers                                                              #
@@ -32,26 +33,50 @@ ok()   { echo "  ✅ $*"; }
 fail() { echo "  ❌ $*" >&2; exit 1; }
 warn() { echo "  ⚠️  $*"; }
 
-write_indiserver_service() {
+ensure_indiwebmanager_installed() {
+    if command -v indi-web >/dev/null 2>&1; then
+        return 0
+    fi
+
+    uv tool install --force indiweb || fail "indiweb installation failed"
+
+    local indiweb_candidates=(
+        "/usr/local/bin/indi-web"
+        "/root/.local/bin/indi-web"
+        "${HOME}/.local/bin/indi-web"
+    )
+    local candidate=""
+
+    for candidate in "${indiweb_candidates[@]}"; do
+        if [[ -x "${candidate}" ]]; then
+            if [[ "${candidate}" != "/usr/local/bin/indi-web" ]]; then
+                ln -sf "${candidate}" /usr/local/bin/indi-web
+            fi
+            export PATH="/usr/local/bin:${candidate%/indi-web}:${PATH}"
+            break
+        fi
+    done
+
+    command -v indi-web >/dev/null 2>&1 || fail "indiweb installation succeeded but the indi-web binary is not on PATH"
+}
+
+write_indiwebmanager_service() {
     local service_path="$1"
-    cat > "${service_path}" <<INDI
+    local indiweb_bin="$2"
+    cat > "${service_path}" <<INDIWEB
 [Unit]
-Description=INDI Server
+Description=INDI Web Manager
 After=network.target
 
 [Service]
 Type=simple
-RuntimeDirectory=kepler-indiserver
-RuntimeDirectoryMode=0755
-ExecStartPre=/usr/bin/rm -f /run/kepler-indiserver/control.fifo
-ExecStartPre=/usr/bin/mkfifo /run/kepler-indiserver/control.fifo
-ExecStart=/usr/bin/indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}
-ExecStopPost=/usr/bin/rm -f /run/kepler-indiserver/control.fifo
+ExecStart=${indiweb_bin}
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-INDI
+INDIWEB
 }
 
 disable_desktop_camera_claimers() {
@@ -266,12 +291,16 @@ if [[ "${REQ_FREE_MB}" -gt 0 ]]; then
     ok "Free space check passed (${AVAIL_MB} MB available in ${DATA_DIR})"
 fi
 
-# Preflight: Managed service layout check (all managed services must already be bootstrapped)
-for SVC in ${MANAGED_SVCS}; do
-    if ! systemctl cat "${SVC}" &>/dev/null 2>&1; then
-        fail "Expected managed service '${SVC}' is not present.  Run bootstrap.sh before upgrading."
-    fi
-done
+# Preflight: Managed service layout check.
+if ! systemctl cat kepler-node &>/dev/null 2>&1; then
+    fail "Expected managed service 'kepler-node' is not present.  Run bootstrap.sh before upgrading."
+fi
+if ! systemctl cat kepler-ui &>/dev/null 2>&1; then
+    fail "Expected managed service 'kepler-ui' is not present.  Run bootstrap.sh before upgrading."
+fi
+if ! systemctl cat indiwebmanager &>/dev/null 2>&1 && ! systemctl cat indiserver &>/dev/null 2>&1; then
+    fail "Expected either 'indiwebmanager' or legacy 'indiserver' managed service to be present.  Run bootstrap.sh before upgrading."
+fi
 ok "Managed service layout check passed"
 
 # Preflight: Manifest writeability check
@@ -289,9 +318,10 @@ ok "All preflight checks passed"
 log "Step 2: Stopping managed services before applying changes..."
 
 if [[ "${SKIP_RESTART}" == "false" ]]; then
-    # Stop in dependency order: UI first, then kepler-node, then indiserver
+    # Stop in dependency order: UI first, then kepler-node, then broker and any legacy indiserver service
     systemctl stop kepler-ui    2>/dev/null || true
     systemctl stop kepler-node  2>/dev/null || true
+    systemctl stop indiwebmanager 2>/dev/null || true
     systemctl stop indiserver   2>/dev/null || true
     log "Managed services stopped"
 else
@@ -324,6 +354,8 @@ log "Step 3: Syncing Python dependencies..."
 uv sync --extra local-api --extra ui \
     || fail "Dependency sync failed — review uv output above"
 
+ensure_indiwebmanager_installed
+
 ok "Dependencies synced"
 
 # ------------------------------------------------------------------ #
@@ -332,8 +364,9 @@ ok "Dependencies synced"
 
 log "Step 3b: Refreshing managed service units..."
 
-write_indiserver_service "/etc/systemd/system/indiserver.service"
+write_indiwebmanager_service "/etc/systemd/system/indiwebmanager.service" "$(command -v indi-web)"
 systemctl daemon-reload
+systemctl disable indiserver 2>/dev/null || true
 
 ok "Managed service units refreshed"
 
@@ -374,14 +407,14 @@ ok "Install manifest updated (outcome recorded after health checks)"
 HEALTH_FAIL=false
 
 if [[ "${SKIP_RESTART}" == "false" ]]; then
-    # Start in dependency order: indiserver first, then kepler-node, then optional UI
-    log "Step 5: Starting indiserver service..."
-    systemctl start indiserver
+    # Start in dependency order: broker first, then kepler-node, then optional UI
+    log "Step 5: Starting indiwebmanager service..."
+    systemctl start indiwebmanager
     sleep 2
-    if systemctl is-active --quiet indiserver; then
-        ok "indiserver service started successfully"
+    if systemctl is-active --quiet indiwebmanager; then
+        ok "indiwebmanager service started successfully"
     else
-        warn "indiserver service did not start — check: journalctl -u indiserver"
+        warn "indiwebmanager service did not start — check: journalctl -u indiwebmanager"
         sed -i 's/"last_upgrade_result": "in-progress"/"last_upgrade_result": "service-restart-failed"/' \
             "${MANIFEST_PATH}" || true
         HEALTH_FAIL=true
@@ -452,10 +485,24 @@ else
     HEALTH_FAIL=true
 fi
 
-if systemctl is-active --quiet indiserver; then
-    ok "indiserver service is active"
+if command -v indi-web &>/dev/null; then
+    ok "indi-web found at $(command -v indi-web)"
 else
-    warn "indiserver service is not running — INDI device control may not be available"
+    warn "indi-web not found — brokered INDI control will not be available"
+    HEALTH_FAIL=true
+fi
+
+if systemctl is-active --quiet indiwebmanager; then
+    ok "indiwebmanager service is active"
+else
+    warn "indiwebmanager service is not running — brokered INDI control may not be available"
+    HEALTH_FAIL=true
+fi
+
+if curl -sf "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/server/status" &>/dev/null; then
+    ok "indiwebmanager API is reachable on port ${INDIWEBMANAGER_PORT}"
+else
+    warn "indiwebmanager API is not reachable on port ${INDIWEBMANAGER_PORT}"
     HEALTH_FAIL=true
 fi
 

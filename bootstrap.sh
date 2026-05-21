@@ -23,6 +23,7 @@ KEPLER_PORT=8000
 UI_PORT=8501
 RDP_PORT=3389
 INDI_PORT=7624
+INDIWEBMANAGER_PORT=8624
 SKIP_REBOOT_PROMPT=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEPLER_VERSION="$(grep '^version' "${SCRIPT_DIR}/pyproject.toml" 2>/dev/null | head -1 | sed 's/version = "\(.*\)"/\1/' || echo "dev")"
@@ -40,29 +41,50 @@ apt_package_available() {
     apt-cache show "$1" >/dev/null 2>&1
 }
 
-write_indiserver_service() {
+ensure_indiwebmanager_installed() {
+    if command -v indi-web >/dev/null 2>&1; then
+        return 0
+    fi
+
+    uv tool install --force indiweb || fail "indiweb installation failed"
+
+    local indiweb_candidates=(
+        "/usr/local/bin/indi-web"
+        "/root/.local/bin/indi-web"
+        "${HOME}/.local/bin/indi-web"
+    )
+    local candidate=""
+
+    for candidate in "${indiweb_candidates[@]}"; do
+        if [[ -x "${candidate}" ]]; then
+            if [[ "${candidate}" != "/usr/local/bin/indi-web" ]]; then
+                ln -sf "${candidate}" /usr/local/bin/indi-web
+            fi
+            export PATH="/usr/local/bin:${candidate%/indi-web}:${PATH}"
+            break
+        fi
+    done
+
+    command -v indi-web >/dev/null 2>&1 || fail "indiweb installation succeeded but the indi-web binary is not on PATH"
+}
+
+write_indiwebmanager_service() {
     local service_path="$1"
-    cat > "${service_path}" <<INDI
+    local indiweb_bin="$2"
+    cat > "${service_path}" <<INDIWEB
 [Unit]
-Description=INDI Server
+Description=INDI Web Manager
 After=network.target
 
 [Service]
-# The generic INDI server stays up in FIFO mode without hardcoding a mount
-# driver into the base install. Add drivers dynamically via the FIFO or
-# override ExecStart later for a concrete rig.
 Type=simple
-RuntimeDirectory=kepler-indiserver
-RuntimeDirectoryMode=0755
-ExecStartPre=/usr/bin/rm -f /run/kepler-indiserver/control.fifo
-ExecStartPre=/usr/bin/mkfifo /run/kepler-indiserver/control.fifo
-ExecStart=/usr/bin/indiserver -f /run/kepler-indiserver/control.fifo -p ${INDI_PORT}
-ExecStopPost=/usr/bin/rm -f /run/kepler-indiserver/control.fifo
+ExecStart=${indiweb_bin}
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-INDI
+INDIWEB
 }
 
 install_fuji_camera_keepalive() {
@@ -274,6 +296,7 @@ ok "System prerequisites installed"
 log "Step 2: Installing uv and kepler-node Python dependencies..."
 
 ensure_uv_installed
+ensure_indiwebmanager_installed
 
 cd "${SCRIPT_DIR}"
 
@@ -331,9 +354,9 @@ log "Step 5: Installing kepler-node systemd service..."
 SERVICE_FILE="/etc/systemd/system/kepler-node.service"
 UV_BIN="$(command -v uv)"
 
-# Both profiles require INDI; field-fallback is a superset of headless-node
-SERVICE_AFTER="network.target gpsd.service indiserver.service"
-SERVICE_WANTS="gpsd.service indiserver.service"
+# Both profiles require the INDI broker; field-fallback is a superset of headless-node
+SERVICE_AFTER="network.target gpsd.service indiwebmanager.service"
+SERVICE_WANTS="gpsd.service indiwebmanager.service"
 
 cat > "${SERVICE_FILE}" <<SERVICE
 [Unit]
@@ -390,14 +413,17 @@ ok "kepler-ui service installed and started"
 # Step 6 — INDI + profile-specific configuration                       #
 # ------------------------------------------------------------------ #
 
-# Both profiles require a managed indiserver.service (spec line 1682).
-log "Step 6: Configuring INDI server service..."
-INDI_SERVICE="/etc/systemd/system/indiserver.service"
-write_indiserver_service "${INDI_SERVICE}"
+# The supported path brokers INDI through indiwebmanager, which owns indiserver lifecycle.
+log "Step 6: Configuring INDI broker service..."
+INDIWEBMANAGER_SERVICE="/etc/systemd/system/indiwebmanager.service"
+INDIWEBMANAGER_BIN="$(command -v indi-web)"
+write_indiwebmanager_service "${INDIWEBMANAGER_SERVICE}" "${INDIWEBMANAGER_BIN}"
 systemctl daemon-reload
-systemctl enable indiserver || warn "INDI service setup failed"
-systemctl start indiserver || warn "INDI server did not start — check: journalctl -u indiserver"
-ok "INDI server service configured"
+systemctl stop indiserver 2>/dev/null || true
+systemctl disable indiserver 2>/dev/null || true
+systemctl enable indiwebmanager || warn "INDI broker service setup failed"
+systemctl start indiwebmanager || warn "INDI broker did not start — check: journalctl -u indiwebmanager"
+ok "INDI broker service configured"
 
 if [[ "${PROFILE}" == "field-fallback" ]]; then
     log "Step 6 (field-fallback): Configuring remote desktop (xrdp)..."
@@ -454,10 +480,24 @@ else
     HEALTH_FAIL=true
 fi
 
-if systemctl is-active --quiet indiserver; then
-    ok "indiserver service is active"
+if command -v indi-web &>/dev/null; then
+    ok "indi-web found at $(command -v indi-web)"
 else
-    warn "indiserver service is not running — INDI device control may not be available"
+    warn "indi-web not found — brokered INDI control will not be available"
+    HEALTH_FAIL=true
+fi
+
+if systemctl is-active --quiet indiwebmanager; then
+    ok "indiwebmanager service is active"
+else
+    warn "indiwebmanager service is not running — brokered INDI control may not be available"
+    HEALTH_FAIL=true
+fi
+
+if curl -sf "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/server/status" &>/dev/null; then
+    ok "indiwebmanager API is reachable on port ${INDIWEBMANAGER_PORT}"
+else
+    warn "indiwebmanager API is not reachable on port ${INDIWEBMANAGER_PORT}"
     HEALTH_FAIL=true
 fi
 

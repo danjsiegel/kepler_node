@@ -6,7 +6,7 @@
   "required_os": "linux",
   "required_architecture": "aarch64",
   "required_free_space_mb": 2048,
-  "managed_services": ["kepler-node", "kepler-ui", "indiserver"],
+  "managed_services": ["kepler-node", "kepler-ui", "indiwebmanager"],
   "target_schema_versions": {"storage": "1"},
   "migration_steps": []
 }
