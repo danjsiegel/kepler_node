@@ -84,7 +84,7 @@ index 10434155..70b6bc80 100644
  # Disable automount for DSLR cameras
  IF (UNIX AND NOT APPLE)
 diff --git a/indi-gphoto/gphoto_ccd.cpp b/indi-gphoto/gphoto_ccd.cpp
-index a8ba5998..e2956fb2 100644
+index a8ba5998..c1040b50 100644
 --- a/indi-gphoto/gphoto_ccd.cpp
 +++ b/indi-gphoto/gphoto_ccd.cpp
 @@ -44,6 +44,11 @@
@@ -276,8 +276,17 @@ index a8ba5998..e2956fb2 100644
      if (PrimaryCCD.getPixelSizeX() == 0.0)
      {
          LOG_INFO("Please update the CCD Information in the Image Info section before "
+@@ -1473,7 +1568,7 @@ bool GPhotoCCD::grabImage()
+ ISwitch * GPhotoCCD::create_switch(const char * basestr, char ** options, int max_opts, int setidx)
+ {
+     int i;
+-    ISwitch * sw     = static_cast<ISwitch *>(calloc(sizeof(ISwitch), max_opts));
++    ISwitch * sw     = static_cast<ISwitch *>(calloc(max_opts, sizeof(ISwitch)));
+     ISwitch * one_sw = sw;
+ 
+     char sw_name[MAXINDINAME];
 diff --git a/indi-gphoto/gphoto_driver.cpp b/indi-gphoto/gphoto_driver.cpp
-index 081d5800..1b28f8c7 100644
+index 081d5800..f892cb33 100644
 --- a/indi-gphoto/gphoto_driver.cpp
 +++ b/indi-gphoto/gphoto_driver.cpp
 @@ -186,6 +186,31 @@ enum
@@ -312,6 +321,33 @@ index 081d5800..1b28f8c7 100644
  void gphoto_set_debug(const char *name)
  {
      strncpy(device, name, 64);
+@@ -256,7 +281,7 @@ int gphoto_read_widget(gphoto_widget *widget)
+             if (!widget->choices)
+             {
+                 widget->choice_cnt = gp_widget_count_choices(widget->widget);
+-                widget->choices    = (char **)calloc(sizeof(char *), widget->choice_cnt + 1);
++                widget->choices    = (char **)calloc(widget->choice_cnt + 1, sizeof(char *));
+             }
+ 
+             for (i = 0; i < widget->choice_cnt; i++)
+@@ -286,7 +311,7 @@ int gphoto_read_widget(gphoto_widget *widget)
+ 
+ static gphoto_widget *find_widget(gphoto_driver *gphoto, const char *name)
+ {
+-    gphoto_widget *widget = (gphoto_widget *)calloc(sizeof(gphoto_widget), 1);
++    gphoto_widget *widget = (gphoto_widget *)calloc(1, sizeof(gphoto_widget));
+     int ret;
+ 
+     widget->name = lookup_widget(gphoto->config, name, &widget->widget);
+@@ -467,7 +492,7 @@ static double *parse_shutterspeed(gphoto_driver *gphoto, gphoto_widget *widget)
+         gphoto->exposure_presets_count = widget->choice_cnt;
+     }
+ 
+-    exposure = (double *)calloc(sizeof(double), widget->choice_cnt);
++    exposure = (double *)calloc(widget->choice_cnt, sizeof(double));
+ 
+     for (i = 0; i < widget->choice_cnt; i++)
+     {
 @@ -840,6 +865,7 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
          DEBUGFDEVICE(device, INDI::Logger::DBG_ERROR, "Error downloading image from camera: %s", gp_result_as_string(result));
          gp_file_free(gphoto->camerafile);
@@ -378,6 +414,24 @@ index 081d5800..1b28f8c7 100644
                      pthread_mutex_unlock(&gphoto->mutex);
                      return -1;
                  }
+@@ -1690,7 +1728,7 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
+         }
+     }
+ 
+-    gphoto                         = (gphoto_driver *)calloc(sizeof(gphoto_driver), 1);
++    gphoto                         = (gphoto_driver *)calloc(1, sizeof(gphoto_driver));
+     gphoto->camera                 = camera;
+     gphoto->context                = context;
+     gphoto->exposure_presets       = nullptr;
+@@ -2005,7 +2043,7 @@ static void find_all_widgets(gphoto_driver *gphoto, CameraWidget *widget, char *
+             return;
+         }
+         list                 = (gphoto_widget_list *)calloc(1, sizeof(gphoto_widget_list));
+-        list->widget         = (gphoto_widget *)calloc(sizeof(gphoto_widget), 1);
++        list->widget         = (gphoto_widget *)calloc(1, sizeof(gphoto_widget));
+         list->widget->widget = widget;
+         list->widget->type   = type;
+         list->widget->name   = uselabel;
 @@ -2208,8 +2246,9 @@ int gphoto_start_preview(gphoto_driver *gphoto)
  
  int gphoto_stop_preview(gphoto_driver *gphoto)
