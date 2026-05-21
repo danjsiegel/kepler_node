@@ -84,7 +84,7 @@ index 10434155..70b6bc80 100644
  # Disable automount for DSLR cameras
  IF (UNIX AND NOT APPLE)
 diff --git a/indi-gphoto/gphoto_ccd.cpp b/indi-gphoto/gphoto_ccd.cpp
-index a8ba5998..c1040b50 100644
+index a8ba5998..e4563acf 100644
 --- a/indi-gphoto/gphoto_ccd.cpp
 +++ b/indi-gphoto/gphoto_ccd.cpp
 @@ -44,6 +44,11 @@
@@ -184,7 +184,7 @@ index a8ba5998..c1040b50 100644
  
      INumberVectorProperty *nvp = PrimaryCCD.getCCDInfo();
  
-@@ -353,12 +383,27 @@ void GPhotoCCD::ISGetProperties(const char * dev)
+@@ -353,12 +383,32 @@ void GPhotoCCD::ISGetProperties(const char * dev)
      // Load the necessary pixel size information
      // The maximum resolution and bits per pixel depend on the capture itself.
      // while the pixel size data remains constant.
@@ -201,6 +201,11 @@ index a8ba5998..c1040b50 100644
 +    if (bpp > 0)
 +        nvp->np[INDI::CCDChip::CCD_BITSPERPIXEL].value = bpp;
 +
++    double restoredPixelX = pixel_x > 0 ? pixel_x : pixel;
++    double restoredPixelY = pixel_y > 0 ? pixel_y : restoredPixelX;
++    if (restoredPixelX > 0 && restoredPixelY > 0)
++        PrimaryCCD.setPixelSize(restoredPixelX, restoredPixelY);
++
 +    if (max_x > 0 && max_y > 0)
 +    {
 +        int restoredBpp = bpp > 0 ? static_cast<int>(bpp) : 8;
@@ -212,7 +217,7 @@ index a8ba5998..c1040b50 100644
  
  }
  
-@@ -942,6 +987,27 @@ bool GPhotoCCD::Connect()
+@@ -942,6 +992,59 @@ bool GPhotoCCD::Connect()
          captureTargetSP.s                      = IPS_OK;
      }
  
@@ -235,12 +240,44 @@ index a8ba5998..c1040b50 100644
 +            captureTargetS[CAPTURE_INTERNAL_RAM].s = ISS_ON;
 +            captureTargetSP.s                      = IPS_OK;
 +        }
++
++        // gphoto2 mislabels PTP register 0x0001 as "Self-timer" on the Fuji X-T5.
++        // Auto-coerce to the first non-Self-timer capturemode on every connect so
++        // the camera is always in a valid still-capture state.
++        {
++            auto cmIter = CamOptions.find("capturemode");
++            if (cmIter != CamOptions.end() && cmIter->second)
++            {
++                cam_opt *cm = cmIter->second;
++                int activeIdx = IUFindOnSwitchIndex(&cm->prop.sw);
++                if (activeIdx >= 0 && activeIdx < cm->prop.sw.nsp &&
++                    strcasestr(cm->prop.sw.sp[activeIdx].label, "self-timer"))
++                {
++                    for (int i = 0; i < cm->prop.sw.nsp; i++)
++                    {
++                        if (i == activeIdx) continue;
++                        if (cm->prop.sw.sp[i].label && !strcasestr(cm->prop.sw.sp[i].label, "self-timer"))
++                        {
++                            if (gphoto_set_widget_num(gphotodrv, cm->widget, i) == GP_OK)
++                            {
++                                IUResetSwitch(&cm->prop.sw);
++                                cm->prop.sw.sp[i].s = ISS_ON;
++                                cm->prop.sw.s = IPS_OK;
++                                LOGF_INFO("Fuji: auto-switched capturemode from Self-timer to %s (gphoto2 PTP label bug)",
++                                          cm->prop.sw.sp[i].label);
++                            }
++                            break;
++                        }
++                    }
++                }
++            }
++        }
 +    }
 +
      if (isSimulation())
          m_CanFocus = false;
      else
-@@ -973,6 +1039,35 @@ bool GPhotoCCD::Disconnect()
+@@ -973,6 +1076,35 @@ bool GPhotoCCD::Disconnect()
  
  bool GPhotoCCD::StartExposure(float duration)
  {
@@ -276,7 +313,7 @@ index a8ba5998..c1040b50 100644
      if (PrimaryCCD.getPixelSizeX() == 0.0)
      {
          LOG_INFO("Please update the CCD Information in the Image Info section before "
-@@ -1473,7 +1568,7 @@ bool GPhotoCCD::grabImage()
+@@ -1473,7 +1605,7 @@ bool GPhotoCCD::grabImage()
  ISwitch * GPhotoCCD::create_switch(const char * basestr, char ** options, int max_opts, int setidx)
  {
      int i;
