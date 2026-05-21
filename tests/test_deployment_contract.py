@@ -278,14 +278,14 @@ def test_bootstrap_and_upgrade_reconcile_starter_rig_indi_profile() -> None:
         assert "KEPLER_INDI_PROFILE_DRIVERS" in content, (
             f"{script_name} must allow the managed indiwebmanager driver set to be overridden"
         )
-        assert "ES iEXOS100 PMC-Eight,GPhoto CCD,Fuji Focus Bridge" in content, (
-            f"{script_name} must default the managed profile to the concrete starter-rig drivers without relying on the crashing Fuji-specific camera driver"
+        assert "ES iEXOS100 PMC-Eight,Fuji DSLR,Fuji Focus Bridge" in content, (
+            f"{script_name} must default the managed profile to the concrete starter-rig drivers once indiwebmanager has a real HOME-backed state directory"
+        )
+        assert "/api/drivers" in content, (
+            f"{script_name} must validate requested driver labels against indiwebmanager's documented driver catalog instead of bypassing the supported control surface"
         )
         assert "/api/profiles/${encoded_name}" in content, (
             f"{script_name} must create or replace the indiwebmanager equipment profile through its REST API"
-        )
-        assert "/usr/share/indi" in content, (
-            f"{script_name} must validate requested driver labels against installed INDI metadata instead of the active server driver list"
         )
         assert '"autostart": 1, "autoconnect": 1' in content, (
             f"{script_name} must configure the managed profile for autostart and autoconnect"
@@ -340,6 +340,17 @@ def test_bootstrap_and_upgrade_disable_gvfs_camera_auto_claimer() -> None:
         )
         assert "pkill -x gvfsd-gphoto2" in content, (
             f"{script_name} must kill an already-running gvfsd-gphoto2 process so the camera is immediately releasable"
+        )
+
+
+def test_bootstrap_and_upgrade_keepalive_yields_to_indi_camera_driver() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "pgrep -f 'indi_(fuji|gphoto)_ccd'" in content, (
+            f"{script_name} must make the Fuji keepalive helper yield when an INDI camera driver is active so gphoto2 does not hold the USB interface busy during capture"
+        )
+        assert "indi camera driver active, keepalive exiting" in content, (
+            f"{script_name} must log when the keepalive loop exits to avoid colliding with INDI capture"
         )
 
 

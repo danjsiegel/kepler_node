@@ -25,7 +25,7 @@ RDP_PORT=3389
 INDI_PORT=7624
 INDIWEBMANAGER_PORT=8624
 INDI_PROFILE_NAME="${KEPLER_INDI_PROFILE_NAME:-Kepler-Starter-Rig}"
-INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,GPhoto CCD,Fuji Focus Bridge}"
+INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,Fuji DSLR,Fuji Focus Bridge}"
 INDIWEBMANAGER_HOME="${KEPLER_INDIWEBMANAGER_HOME:-/var/lib/indiwebmanager}"
 SKIP_REBOOT_PROMPT=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -129,6 +129,7 @@ configure_indiwebmanager_profile() {
     local encoded_name
     local profile_payload
     local drivers_payload
+    local available_drivers_json
     local installed_driver_labels
     local missing_drivers
 
@@ -136,17 +137,10 @@ configure_indiwebmanager_profile() {
     profile_payload="$(python3 -c 'import json, sys; print(json.dumps({"port": int(sys.argv[1]), "autostart": 1, "autoconnect": 1}))' "${INDI_PORT}")"
     drivers_payload="$(python3 -c 'import json, sys; print(json.dumps([{"label": driver.strip()} for driver in sys.argv[1].split(",") if driver.strip()]))' "${INDI_PROFILE_DRIVERS}")"
 
-    installed_driver_labels="$(python3 -c 'from pathlib import Path; import xml.etree.ElementTree as ET; labels=set();
-for path in Path("/usr/share/indi").glob("*.xml"):
-    try:
-        root = ET.parse(path).getroot()
-    except Exception:
-        continue
-    for device in root.iter("device"):
-        label = device.attrib.get("label")
-        if label:
-            labels.add(label)
-print("\n".join(sorted(labels)))')"
+    available_drivers_json="$(curl -sf "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/drivers")" \
+        || fail "Could not read indiwebmanager driver catalog"
+
+    installed_driver_labels="$(printf '%s' "${available_drivers_json}" | python3 -c 'import json, sys; print("\n".join(sorted({entry.get("label") for entry in json.load(sys.stdin) if entry.get("label")})))')"
 
     missing_drivers="$(printf '%s\n' "${installed_driver_labels}" | python3 -c 'import sys; wanted=[item.strip() for item in sys.argv[1].split(",") if item.strip()]; available={line.strip() for line in sys.stdin if line.strip()}; missing=[item for item in wanted if item not in available]; print("\n".join(missing)); raise SystemExit(1 if missing else 0)' "${INDI_PROFILE_DRIVERS}" 2>/dev/null || true)"
 
@@ -178,11 +172,29 @@ install_fuji_camera_keepalive() {
 LOGFILE=/var/log/kepler-camera-attach.log
 INTERVAL=120
 
+indi_camera_driver_active() {
+    pgrep -f 'indi_(fuji|gphoto)_ccd' >/dev/null 2>&1
+}
+
 sleep 2
+
+if indi_camera_driver_active; then
+    echo "$(date -Iseconds) indi camera driver active, skipping keepalive startup" >> "$LOGFILE"
+    exit 0
+fi
 
 echo "$(date -Iseconds) camera attached, starting keepalive loop (interval=${INTERVAL}s)" >> "$LOGFILE"
 
-while /usr/bin/gphoto2 --get-config /main/actions/bulb >> "$LOGFILE" 2>&1; do
+while true; do
+    if indi_camera_driver_active; then
+        echo "$(date -Iseconds) indi camera driver active, keepalive exiting" >> "$LOGFILE"
+        exit 0
+    fi
+
+    if ! /usr/bin/gphoto2 --get-config /main/actions/bulb >> "$LOGFILE" 2>&1; then
+        break
+    fi
+
     sleep "$INTERVAL"
 done
 
