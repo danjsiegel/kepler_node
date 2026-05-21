@@ -105,7 +105,8 @@ build_and_install_fuji_focus_bridge() {
 }
 
 build_and_install_kepler_fuji_ccd() {
-    local work_root="/tmp/kepler-indi-gphoto-${INDI_GPHOTO_UPSTREAM_REF:0:12}"
+    local work_parent="${KEPLER_BUILD_WORK_ROOT:-/var/tmp}"
+    local work_root="${work_parent%/}/kepler-indi-gphoto-${INDI_GPHOTO_UPSTREAM_REF:0:12}"
     local repo_dir="${work_root}/src"
     local build_dir="${work_root}/build"
     local patch_file="${SCRIPT_DIR}/indi/kepler_fuji_ccd/patches/0001-kepler-fuji-x-t5-hardening.patch"
@@ -113,6 +114,7 @@ build_and_install_kepler_fuji_ccd() {
 
     [[ -f "${patch_file}" ]] || fail "Kepler Fuji DSLR patch file is missing at ${patch_file}"
     [[ -f "${xml_file}" ]] || fail "Kepler Fuji DSLR XML metadata is missing at ${xml_file}"
+    install -d "${work_parent}" || fail "Failed to create build work root ${work_parent}"
 
     rm -rf "${work_root}"
 
