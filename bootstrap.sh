@@ -148,6 +148,7 @@ configure_indiwebmanager_profile() {
         fail "indiwebmanager is missing required starter-rig drivers: ${missing_drivers//$'\n'/, }"
     fi
 
+    curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/server/stop" >/dev/null 2>&1 || true
     curl -sf -X DELETE "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null 2>&1 || true
     curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null \
         || fail "Could not create indiwebmanager profile ${INDI_PROFILE_NAME}"
@@ -157,6 +158,15 @@ configure_indiwebmanager_profile() {
     curl -sf -H 'Content-Type: application/json' -X POST -d "${drivers_payload}" \
         "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}/drivers" >/dev/null \
         || fail "Could not assign drivers to indiwebmanager profile ${INDI_PROFILE_NAME}"
+}
+
+start_indiwebmanager_profile() {
+    local encoded_name
+
+    encoded_name="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${INDI_PROFILE_NAME}")"
+
+    curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/server/start/${encoded_name}" >/dev/null \
+        || fail "Could not start indiwebmanager profile ${INDI_PROFILE_NAME}"
 }
 
 install_fuji_camera_keepalive() {
@@ -522,6 +532,8 @@ systemctl start indiwebmanager || warn "INDI broker did not start — check: jou
 wait_for_indiwebmanager_api || warn "indiwebmanager API did not become reachable during setup"
 configure_indiwebmanager_profile
 systemctl restart indiwebmanager || warn "INDI broker did not restart after profile update — check: journalctl -u indiwebmanager"
+wait_for_indiwebmanager_api || warn "indiwebmanager API did not recover after profile update"
+start_indiwebmanager_profile
 ok "INDI broker service configured"
 
 if [[ "${PROFILE}" == "field-fallback" ]]; then

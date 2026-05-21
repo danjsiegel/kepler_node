@@ -269,7 +269,7 @@ def test_bootstrap_and_upgrade_build_fuji_focus_bridge_sidecar() -> None:
         )
 
 
-def test_bootstrap_and_upgrade_reconcile_starter_rig_indi_profile() -> None:
+def test_bootstrap_and_upgrade_wipe_and_recreate_starter_rig_indi_profile() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()
         assert "KEPLER_INDI_PROFILE_NAME" in content, (
@@ -284,14 +284,23 @@ def test_bootstrap_and_upgrade_reconcile_starter_rig_indi_profile() -> None:
         assert "/api/drivers" in content, (
             f"{script_name} must validate requested driver labels against indiwebmanager's documented driver catalog instead of bypassing the supported control surface"
         )
+        assert "/api/server/stop" in content, (
+            f"{script_name} must stop the active indiwebmanager server before wiping the managed profile so stale runtime state cannot survive the upgrade"
+        )
+        assert "-X DELETE \"http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}\"" in content, (
+            f"{script_name} must delete the existing indiwebmanager profile before recreating it"
+        )
         assert "/api/profiles/${encoded_name}" in content, (
-            f"{script_name} must create or replace the indiwebmanager equipment profile through its REST API"
+            f"{script_name} must recreate the indiwebmanager equipment profile through its REST API"
         )
         assert '"autostart": 1, "autoconnect": 1' in content, (
             f"{script_name} must configure the managed profile for autostart and autoconnect"
         )
         assert "systemctl restart indiwebmanager" in content, (
-            f"{script_name} must restart indiwebmanager after reconciling the profile so the managed server picks up the desired driver set"
+            f"{script_name} must restart indiwebmanager after wiping the profile so broker cache is cleared"
+        )
+        assert "/api/server/start/${encoded_name}" in content, (
+            f"{script_name} must explicitly start the recreated profile after broker restart so upgrades end with a deterministic active driver set"
         )
 
 

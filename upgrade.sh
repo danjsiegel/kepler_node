@@ -140,6 +140,7 @@ configure_indiwebmanager_profile() {
         fail "indiwebmanager is missing required starter-rig drivers: ${missing_drivers//$'\n'/, }"
     fi
 
+    curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/server/stop" >/dev/null 2>&1 || true
     curl -sf -X DELETE "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null 2>&1 || true
     curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null \
         || fail "Could not create indiwebmanager profile ${INDI_PROFILE_NAME}"
@@ -149,6 +150,15 @@ configure_indiwebmanager_profile() {
     curl -sf -H 'Content-Type: application/json' -X POST -d "${drivers_payload}" \
         "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}/drivers" >/dev/null \
         || fail "Could not assign drivers to indiwebmanager profile ${INDI_PROFILE_NAME}"
+}
+
+start_indiwebmanager_profile() {
+    local encoded_name
+
+    encoded_name="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${INDI_PROFILE_NAME}")"
+
+    curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/server/start/${encoded_name}" >/dev/null \
+        || fail "Could not start indiwebmanager profile ${INDI_PROFILE_NAME}"
 }
 
 disable_desktop_camera_claimers() {
@@ -525,6 +535,7 @@ if [[ "${SKIP_RESTART}" == "false" ]]; then
         configure_indiwebmanager_profile
         systemctl restart indiwebmanager || fail "Could not restart indiwebmanager after profile update"
         wait_for_indiwebmanager_api || fail "indiwebmanager API did not recover after profile update"
+        start_indiwebmanager_profile
     fi
 
     log "Step 5: Starting kepler-node service..."
