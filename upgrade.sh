@@ -23,6 +23,9 @@ KEPLER_PORT=8000
 UI_PORT=8501
 INDI_PORT=7624
 INDIWEBMANAGER_PORT=8624
+INDI_PROFILE_NAME="${KEPLER_INDI_PROFILE_NAME:-Kepler-Starter-Rig}"
+INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,GPhoto CCD,Fuji Focus Bridge}"
+INDIWEBMANAGER_HOME="${KEPLER_INDIWEBMANAGER_HOME:-/var/lib/indiwebmanager}"
 
 # ------------------------------------------------------------------ #
 # Helpers                                                              #
@@ -34,11 +37,11 @@ fail() { echo "  ❌ $*" >&2; exit 1; }
 warn() { echo "  ⚠️  $*"; }
 
 ensure_indiwebmanager_installed() {
-    if command -v indi-web >/dev/null 2>&1; then
+    if command -v indi-web >/dev/null 2>&1 && indi-web --help >/dev/null 2>&1; then
         return 0
     fi
 
-    uv tool install --force indiweb || fail "indiweb installation failed"
+    uv tool install --force --with legacy-cgi indiweb || fail "indiweb installation failed"
 
     local indiweb_candidates=(
         "/usr/local/bin/indi-web"
@@ -58,11 +61,13 @@ ensure_indiwebmanager_installed() {
     done
 
     command -v indi-web >/dev/null 2>&1 || fail "indiweb installation succeeded but the indi-web binary is not on PATH"
+    indi-web --help >/dev/null 2>&1 || fail "indiweb installation succeeded but indi-web is not runnable"
 }
 
 write_indiwebmanager_service() {
     local service_path="$1"
     local indiweb_bin="$2"
+    local indiweb_home="$3"
     cat > "${service_path}" <<INDIWEB
 [Unit]
 Description=INDI Web Manager
@@ -70,6 +75,10 @@ After=network.target
 
 [Service]
 Type=simple
+Environment=HOME=${indiweb_home}
+WorkingDirectory=${indiweb_home}
+StateDirectory=indiwebmanager
+ExecStartPre=/usr/bin/install -d -m 0755 ${indiweb_home}/.indi
 ExecStart=${indiweb_bin}
 Restart=on-failure
 RestartSec=5
@@ -77,6 +86,75 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 INDIWEB
+}
+
+build_and_install_fuji_focus_bridge() {
+    local bridge_src_dir="${SCRIPT_DIR}/indi/fuji_focus_bridge"
+    local bridge_build_dir="${bridge_src_dir}/build"
+
+    [[ -d "${bridge_src_dir}" ]] || fail "Fuji focus bridge source directory is missing at ${bridge_src_dir}"
+
+    cmake -S "${bridge_src_dir}" -B "${bridge_build_dir}" \
+        || fail "Fuji focus bridge CMake configure failed"
+    cmake --build "${bridge_build_dir}" -j"$(nproc)" \
+        || fail "Fuji focus bridge build failed"
+    cmake --install "${bridge_build_dir}" \
+        || fail "Fuji focus bridge install failed"
+}
+
+wait_for_indiwebmanager_api() {
+    local attempts=0
+    local max_attempts=12
+
+    while ! curl -sf "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/server/status" &>/dev/null; do
+        attempts=$((attempts + 1))
+        if [[ ${attempts} -ge ${max_attempts} ]]; then
+            return 1
+        fi
+        sleep 2
+    done
+
+    return 0
+}
+
+configure_indiwebmanager_profile() {
+    local encoded_name
+    local profile_payload
+    local drivers_payload
+    local installed_driver_labels
+    local missing_drivers
+
+    encoded_name="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${INDI_PROFILE_NAME}")"
+    profile_payload="$(python3 -c 'import json, sys; print(json.dumps({"port": int(sys.argv[1]), "autostart": 1, "autoconnect": 1}))' "${INDI_PORT}")"
+    drivers_payload="$(python3 -c 'import json, sys; print(json.dumps([{"label": driver.strip()} for driver in sys.argv[1].split(",") if driver.strip()]))' "${INDI_PROFILE_DRIVERS}")"
+
+    installed_driver_labels="$(python3 -c 'from pathlib import Path; import xml.etree.ElementTree as ET; labels=set();
+for path in Path("/usr/share/indi").glob("*.xml"):
+    try:
+        root = ET.parse(path).getroot()
+    except Exception:
+        continue
+    for device in root.iter("device"):
+        label = device.attrib.get("label")
+        if label:
+            labels.add(label)
+print("\n".join(sorted(labels)))')"
+
+    missing_drivers="$(printf '%s\n' "${installed_driver_labels}" | python3 -c 'import sys; wanted=[item.strip() for item in sys.argv[1].split(",") if item.strip()]; available={line.strip() for line in sys.stdin if line.strip()}; missing=[item for item in wanted if item not in available]; print("\n".join(missing)); raise SystemExit(1 if missing else 0)' "${INDI_PROFILE_DRIVERS}" 2>/dev/null || true)"
+
+    if [[ -n "${missing_drivers}" ]]; then
+        fail "indiwebmanager is missing required starter-rig drivers: ${missing_drivers//$'\n'/, }"
+    fi
+
+    curl -sf -X DELETE "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null 2>&1 || true
+    curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null \
+        || fail "Could not create indiwebmanager profile ${INDI_PROFILE_NAME}"
+    curl -sf -H 'Content-Type: application/json' -X PUT -d "${profile_payload}" \
+        "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null \
+        || fail "Could not configure indiwebmanager profile ${INDI_PROFILE_NAME}"
+    curl -sf -H 'Content-Type: application/json' -X POST -d "${drivers_payload}" \
+        "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}/drivers" >/dev/null \
+        || fail "Could not assign drivers to indiwebmanager profile ${INDI_PROFILE_NAME}"
 }
 
 disable_desktop_camera_claimers() {
@@ -358,14 +436,24 @@ ensure_indiwebmanager_installed
 
 ok "Dependencies synced"
 
+log "Step 3a: Ensuring Fuji focus bridge build prerequisites..."
+apt-get update -qq
+apt-get install -y --no-install-recommends build-essential cmake libindi-dev gphoto2 \
+    || fail "Fuji focus bridge build prerequisites could not be installed"
+
+log "Step 3aa: Building and installing Fuji focus bridge sidecar..."
+build_and_install_fuji_focus_bridge
+ok "Fuji focus bridge sidecar installed"
+
 # ------------------------------------------------------------------ #
 # Step 3b — Refresh managed service units                             #
 # ------------------------------------------------------------------ #
 
 log "Step 3b: Refreshing managed service units..."
 
-write_indiwebmanager_service "/etc/systemd/system/indiwebmanager.service" "$(command -v indi-web)"
+write_indiwebmanager_service "/etc/systemd/system/indiwebmanager.service" "$(command -v indi-web)" "${INDIWEBMANAGER_HOME}"
 systemctl daemon-reload
+systemctl enable indiwebmanager >/dev/null 2>&1 || warn "Could not enable indiwebmanager service"
 systemctl disable indiserver 2>/dev/null || true
 
 ok "Managed service units refreshed"
@@ -418,6 +506,13 @@ if [[ "${SKIP_RESTART}" == "false" ]]; then
         sed -i 's/"last_upgrade_result": "in-progress"/"last_upgrade_result": "service-restart-failed"/' \
             "${MANIFEST_PATH}" || true
         HEALTH_FAIL=true
+    fi
+
+    if ! ${HEALTH_FAIL}; then
+        wait_for_indiwebmanager_api || fail "indiwebmanager API did not become reachable during upgrade"
+        configure_indiwebmanager_profile
+        systemctl restart indiwebmanager || fail "Could not restart indiwebmanager after profile update"
+        wait_for_indiwebmanager_api || fail "indiwebmanager API did not recover after profile update"
     fi
 
     log "Step 5: Starting kepler-node service..."

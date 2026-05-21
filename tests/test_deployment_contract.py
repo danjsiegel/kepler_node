@@ -193,7 +193,7 @@ def test_bootstrap_sh_installs_gphoto2_for_direct_camera_backend() -> None:
 
 def test_bootstrap_sh_installs_full_supported_runtime_once() -> None:
     content = (_REPO_ROOT / "bootstrap.sh").read_text()
-    for package_name in ("kstars", "xrdp", "tigervnc-standalone-server"):
+    for package_name in ("build-essential", "cmake", "kstars", "xrdp", "tigervnc-standalone-server"):
         assert package_name in content, (
             f"bootstrap.sh must install {package_name} as part of the full supported package set"
         )
@@ -244,12 +244,72 @@ def test_bootstrap_sh_installs_indiwebmanager_via_uv_tool() -> None:
     assert "ensure_indiwebmanager_installed()" in content, (
         "bootstrap.sh must centralize indiwebmanager installation so the broker binary is provisioned deterministically"
     )
-    assert "uv tool install --force indiweb" in content, (
-        "bootstrap.sh must install indiweb via uv tool so the broker is available even when no distro package exists"
+    assert "uv tool install --force --with legacy-cgi indiweb" in content, (
+        "bootstrap.sh must install indiweb with legacy-cgi so the broker still runs on Python 3.13 systems where cgi was removed"
     )
     assert "/usr/local/bin/indi-web" in content, (
         "bootstrap.sh must stabilize the indi-web binary path for systemd"
     )
+    assert "indi-web --help >/dev/null 2>&1" in content, (
+        "bootstrap.sh must treat a present-but-broken indi-web binary as reinstallable instead of assuming it is healthy"
+    )
+
+
+def test_bootstrap_and_upgrade_build_fuji_focus_bridge_sidecar() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "indi/fuji_focus_bridge" in content, (
+            f"{script_name} must manage the Fuji focus bridge source tree as part of the supported starter-rig path"
+        )
+        assert "cmake -S \"${bridge_src_dir}\" -B \"${bridge_build_dir}\"" in content, (
+            f"{script_name} must configure the Fuji focus bridge with CMake before attempting to use it"
+        )
+        assert "cmake --install \"${bridge_build_dir}\"" in content, (
+            f"{script_name} must install the Fuji focus bridge sidecar so indiwebmanager can discover it"
+        )
+
+
+def test_bootstrap_and_upgrade_reconcile_starter_rig_indi_profile() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "KEPLER_INDI_PROFILE_NAME" in content, (
+            f"{script_name} must allow the managed indiwebmanager profile name to be overridden"
+        )
+        assert "KEPLER_INDI_PROFILE_DRIVERS" in content, (
+            f"{script_name} must allow the managed indiwebmanager driver set to be overridden"
+        )
+        assert "ES iEXOS100 PMC-Eight,GPhoto CCD,Fuji Focus Bridge" in content, (
+            f"{script_name} must default the managed profile to the concrete starter-rig drivers without relying on the crashing Fuji-specific camera driver"
+        )
+        assert "/api/profiles/${encoded_name}" in content, (
+            f"{script_name} must create or replace the indiwebmanager equipment profile through its REST API"
+        )
+        assert "/usr/share/indi" in content, (
+            f"{script_name} must validate requested driver labels against installed INDI metadata instead of the active server driver list"
+        )
+        assert '"autostart": 1, "autoconnect": 1' in content, (
+            f"{script_name} must configure the managed profile for autostart and autoconnect"
+        )
+        assert "systemctl restart indiwebmanager" in content, (
+            f"{script_name} must restart indiwebmanager after reconciling the profile so the managed server picks up the desired driver set"
+        )
+
+
+def test_bootstrap_and_upgrade_write_indiwebmanager_with_real_home() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert 'INDIWEBMANAGER_HOME="${KEPLER_INDIWEBMANAGER_HOME:-/var/lib/indiwebmanager}"' in content, (
+            f"{script_name} must give indiwebmanager a stable home directory so INDI drivers can persist configuration"
+        )
+        assert "Environment=HOME=${indiweb_home}" in content, (
+            f"{script_name} must set HOME in indiwebmanager.service so drivers do not try to save config under (null)/.indi"
+        )
+        assert "WorkingDirectory=${indiweb_home}" in content, (
+            f"{script_name} must run indiwebmanager from its state directory so relative config paths are stable"
+        )
+        assert "ExecStartPre=/usr/bin/install -d -m 0755 ${indiweb_home}/.indi" in content, (
+            f"{script_name} must pre-create the .indi config directory before starting indiwebmanager"
+        )
 
 
 def test_bootstrap_and_upgrade_manage_indiwebmanager_service() -> None:
@@ -290,6 +350,9 @@ def test_upgrade_sh_refreshes_managed_service_units() -> None:
     )
     assert 'write_indiwebmanager_service "/etc/systemd/system/indiwebmanager.service" "$(command -v indi-web)"' in content, (
         "upgrade.sh must rewrite the canonical indiwebmanager.service during upgrades"
+    )
+    assert "systemctl enable indiwebmanager" in content, (
+        "upgrade.sh must enable indiwebmanager during upgrades so the broker survives reboot on existing installs"
     )
     assert "Step 3c: Preventing desktop camera auto-claimers" in content, (
         "upgrade.sh should disable GVFS camera auto-claimers before restarting services"
