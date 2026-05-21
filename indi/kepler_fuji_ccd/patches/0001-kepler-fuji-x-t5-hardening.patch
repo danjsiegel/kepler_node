@@ -240,7 +240,7 @@ index a8ba5998..e2956fb2 100644
      if (isSimulation())
          m_CanFocus = false;
      else
-@@ -973,6 +1039,32 @@ bool GPhotoCCD::Disconnect()
+@@ -973,6 +1039,35 @@ bool GPhotoCCD::Disconnect()
  
  bool GPhotoCCD::StartExposure(float duration)
  {
@@ -253,7 +253,10 @@ index a8ba5998..e2956fb2 100644
 +            if ((captureMode->widget->type == GP_WIDGET_RADIO || captureMode->widget->type == GP_WIDGET_MENU) &&
 +                    captureMode->widget->choice_cnt > 0)
 +            {
-+                int activeIndex = captureMode->widget->value.index;
++                int activeIndex = IUFindOnSwitchIndex(&captureMode->prop.sw);
++                if (activeIndex < 0)
++                    activeIndex = captureMode->widget->value.index;
++
 +                if (activeIndex >= 0 && activeIndex < captureMode->widget->choice_cnt)
 +                {
 +                    const char * activeChoice = captureMode->widget->choices[activeIndex];
