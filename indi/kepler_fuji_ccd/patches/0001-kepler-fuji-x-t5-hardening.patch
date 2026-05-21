@@ -84,7 +84,7 @@ index 10434155..70b6bc80 100644
  # Disable automount for DSLR cameras
  IF (UNIX AND NOT APPLE)
 diff --git a/indi-gphoto/gphoto_ccd.cpp b/indi-gphoto/gphoto_ccd.cpp
-index a8ba5998..04ff5bab 100644
+index a8ba5998..9cb90739 100644
 --- a/indi-gphoto/gphoto_ccd.cpp
 +++ b/indi-gphoto/gphoto_ccd.cpp
 @@ -44,6 +44,11 @@
@@ -169,7 +169,50 @@ index a8ba5998..04ff5bab 100644
      IUFillSwitchVector(&forceBULBSP, forceBULBS, 2, getDeviceName(), "CCD_FORCE_BLOB", "Force BULB",
                         OPTIONS_TAB, IP_RW, ISR_1OFMANY, 0, IPS_IDLE);
  
-@@ -942,6 +969,27 @@ bool GPhotoCCD::Connect()
+@@ -340,10 +367,13 @@ void GPhotoCCD::ISGetProperties(const char * dev)
+         return;
+ 
+     // Read Image Info if we have not connected yet.
+-    double pixel = 0, pixel_x = 0, pixel_y = 0;
++    double max_x = 0, max_y = 0, pixel = 0, pixel_x = 0, pixel_y = 0, bpp = 0;
++    IUGetConfigNumber(getDeviceName(), "CCD_INFO", "CCD_MAX_X", &max_x);
++    IUGetConfigNumber(getDeviceName(), "CCD_INFO", "CCD_MAX_Y", &max_y);
+     IUGetConfigNumber(getDeviceName(), "CCD_INFO", "CCD_PIXEL_SIZE", &pixel);
+     IUGetConfigNumber(getDeviceName(), "CCD_INFO", "CCD_PIXEL_SIZE_X", &pixel_x);
+     IUGetConfigNumber(getDeviceName(), "CCD_INFO", "CCD_PIXEL_SIZE_Y", &pixel_y);
++    IUGetConfigNumber(getDeviceName(), "CCD_INFO", "CCD_BITSPERPIXEL", &bpp);
+ 
+     INumberVectorProperty *nvp = PrimaryCCD.getCCDInfo();
+ 
+@@ -353,12 +383,27 @@ void GPhotoCCD::ISGetProperties(const char * dev)
+     // Load the necessary pixel size information
+     // The maximum resolution and bits per pixel depend on the capture itself.
+     // while the pixel size data remains constant.
++    if (max_x > 0)
++        nvp->np[INDI::CCDChip::CCD_MAX_X].value = max_x;
++    if (max_y > 0)
++        nvp->np[INDI::CCDChip::CCD_MAX_Y].value = max_y;
+     if (pixel > 0)
+         nvp->np[INDI::CCDChip::CCD_PIXEL_SIZE].value = pixel;
+     if (pixel_x > 0)
+         nvp->np[INDI::CCDChip::CCD_PIXEL_SIZE_X].value = pixel_x;
+     if (pixel_y > 0)
+         nvp->np[INDI::CCDChip::CCD_PIXEL_SIZE_Y].value = pixel_y;
++    if (bpp > 0)
++        nvp->np[INDI::CCDChip::CCD_BITSPERPIXEL].value = bpp;
++
++    if (max_x > 0 && max_y > 0)
++    {
++        int restoredBpp = bpp > 0 ? static_cast<int>(bpp) : 8;
++        PrimaryCCD.setResolution(max_x, max_y);
++        PrimaryCCD.setFrame(0, 0, max_x, max_y);
++        PrimaryCCD.setNAxis(2);
++        PrimaryCCD.setBPP(restoredBpp);
++    }
+ 
+ }
+ 
+@@ -942,6 +987,27 @@ bool GPhotoCCD::Connect()
          captureTargetSP.s                      = IPS_OK;
      }
  
@@ -197,6 +240,36 @@ index a8ba5998..04ff5bab 100644
      if (isSimulation())
          m_CanFocus = false;
      else
+@@ -973,6 +1039,29 @@ bool GPhotoCCD::Disconnect()
+ 
+ bool GPhotoCCD::StartExposure(float duration)
+ {
++    if (!isSimulation())
++    {
++        auto captureModeIter = CamOptions.find("capturemode");
++        if (captureModeIter != CamOptions.end() && captureModeIter->second != nullptr)
++        {
++            cam_opt * captureMode = captureModeIter->second;
++            if ((captureMode->widget->type == GP_WIDGET_RADIO || captureMode->widget->type == GP_WIDGET_MENU) &&
++                    captureMode->widget->choice_cnt > 0)
++            {
++                int activeIndex = captureMode->widget->value.index;
++                if (activeIndex >= 0 && activeIndex < captureMode->widget->choice_cnt)
++                {
++                    const char * activeChoice = captureMode->widget->choices[activeIndex];
++                    if (activeChoice && strcasestr(activeChoice, "self-timer"))
++                    {
++                        LOG_ERROR("Fuji capture mode is set to Self-timer. Change the camera body to a normal still-capture mode before exposing.");
++                        return false;
++                    }
++                }
++            }
++        }
++    }
++
+     if (PrimaryCCD.getPixelSizeX() == 0.0)
+     {
+         LOG_INFO("Please update the CCD Information in the Image Info section before "
 diff --git a/indi-gphoto/gphoto_driver.cpp b/indi-gphoto/gphoto_driver.cpp
 index 081d5800..237e56e5 100644
 --- a/indi-gphoto/gphoto_driver.cpp
