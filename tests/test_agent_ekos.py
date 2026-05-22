@@ -4,7 +4,7 @@ Covers:
 - EkosAdapterProtocol structural compliance
 - StubEkosAdapter contract behaviour (no-op safe defaults)
 - DBusEkosAdapter with a fake DBus transport
-- DeviceActivityEventType phase-2 observation events are present
+- DeviceActivityEventType observation events are present
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ from kepler_node.agent.ekos import (
 from kepler_node.agent.interfaces import DeviceActivityEventType
 
 # ---------------------------------------------------------------------------
-# DeviceActivityEventType: Phase 2 observation events exist
+# DeviceActivityEventType observation events exist
 # ---------------------------------------------------------------------------
 
 
 def test_observation_event_types_present() -> None:
-    """Phase 2 requires focus, temperature, and capture-state event types."""
+    """Observation support requires focus, temperature, and capture-state event types."""
     assert DeviceActivityEventType.FOCUS_POSITION_CHANGED == "focus_position_changed"
     assert DeviceActivityEventType.TEMPERATURE_READING == "temperature_reading"
     assert DeviceActivityEventType.CAPTURE_SEQUENCE_PAUSED == "capture_sequence_paused"
@@ -327,7 +327,7 @@ class _dbus_patched:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: DBusEkosAdapter.status() populates full NormalizedEkosSnapshot
+# DBusEkosAdapter.status() populates the full NormalizedEkosSnapshot
 # ---------------------------------------------------------------------------
 
 
@@ -462,7 +462,7 @@ def test_dbus_adapter_status_align_inactive_when_solver_done() -> None:
 def test_dbus_adapter_status_partial_failure_graceful_fallback() -> None:
     """status() must return a valid snapshot even when secondary DBus calls fail.
 
-    Phase 3 requirement: individual field queries are wrapped independently so
+    Requirement: individual field queries are wrapped independently so
     a partial failure does not discard the fields that succeeded.
     """
     fake_dbus, bus, cap_iface, foc_iface, align_iface = _make_fake_dbus(
@@ -510,14 +510,14 @@ def test_dbus_adapter_status_raw_status_in_details() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 round 2: sequence_exists from queue presence (Finding 2)
+# sequence_exists derived from queue presence
 # ---------------------------------------------------------------------------
 
 
 def test_dbus_adapter_status_sequence_exists_true_idle_with_loaded_queue() -> None:
     """sequence_exists must be True when Ekos is IDLE but the job queue is non-empty.
 
-    Finding 2 (phase3_check_round1): 'idle with a loaded sequence' must be
+    Regression guard: 'idle with a loaded sequence' must be
     distinguishable from 'idle with no sequence'.  The previous implementation
     derived sequence_exists from state alone, so any IDLE report yielded False.
     """

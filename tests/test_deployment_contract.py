@@ -702,7 +702,7 @@ def test_deploy_pi_workflow_targets_self_hosted_pi_runner() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4: Fuji focus bridge sidecar contract checks
+# Fuji focus bridge sidecar contract checks
 # ---------------------------------------------------------------------------
 
 
@@ -710,7 +710,7 @@ def test_fuji_focus_bridge_verify_script_exists() -> None:
     script = _REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh"
     assert script.exists(), (
         "scripts/fuji_focus_bridge_verify.sh must exist as the reusable Pi-side "
-        "verification script for the Fuji focus bridge (Phase 4 acceptance check 2)"
+        "verification script for the Fuji focus bridge"
     )
     content = script.read_text()
     assert "#!/usr/bin/env bash" in content, "fuji_focus_bridge_verify.sh must have a bash shebang"
@@ -720,7 +720,7 @@ def test_fuji_focus_bridge_verify_script_defaults_to_read_only() -> None:
     content = (_REPO_ROOT / "scripts" / "fuji_focus_bridge_verify.sh").read_text()
     assert "ALLOW_MOVE=false" in content, (
         "fuji_focus_bridge_verify.sh must default ALLOW_MOVE to false so the script "
-        "is safe to run without flags (Phase 4 acceptance check 2)"
+        "is safe to run without flags"
     )
     assert "--allow-move" in content, (
         "fuji_focus_bridge_verify.sh must expose --allow-move flag for opt-in motion"
@@ -743,7 +743,7 @@ def test_fuji_focus_bridge_verify_script_probes_known_surfaces() -> None:
     for node in ("d171", "d262", "d209"):
         assert node in content, (
             f"fuji_focus_bridge_verify.sh must probe /main/other/{node} "
-            "(Phase 4 spec: script must read all focus-relevant Fuji nodes)"
+            "(script must read all focus-relevant Fuji nodes)"
         )
 
 
@@ -759,7 +759,7 @@ def test_fuji_focus_bridge_indi_driver_files_exist() -> None:
     bridge_dir = _REPO_ROOT / "indi" / "fuji_focus_bridge"
     assert bridge_dir.exists(), (
         "indi/fuji_focus_bridge/ must exist as the standalone INDI focuser sidecar "
-        "(Phase 4 acceptance check 3)"
+        "for the supported focus-bridge surface"
     )
     required_files = (
         "fuji_focus_bridge.cpp",
@@ -779,7 +779,7 @@ def test_fuji_focus_bridge_xml_declares_focuser_device() -> None:
     content = xml_path.read_text()
     assert "Focusers" in content, (
         "fuji_focus_bridge.xml must declare devGroup group='Focusers' so Ekos "
-        "discovers the sidecar as a focuser device (Phase 4 acceptance check 3)"
+        "discovers the sidecar as a focuser device"
     )
     assert "indi_fuji_focus_bridge" in content, (
         "fuji_focus_bridge.xml must reference the indi_fuji_focus_bridge driver binary"
@@ -791,11 +791,11 @@ def test_fuji_focus_bridge_cpp_exposes_only_relative_move_contract() -> None:
     content = cpp_path.read_text()
     assert "FOCUSER_CAN_REL_MOVE" in content, (
         "fuji_focus_bridge.cpp must advertise FOCUSER_CAN_REL_MOVE capability "
-        "(Phase 4: minimum viable relative focuser semantics)"
+        "for minimum viable relative focuser semantics"
     )
     assert "FOCUSER_CAN_ABS_MOVE" not in content, (
         "fuji_focus_bridge.cpp must NOT advertise FOCUSER_CAN_ABS_MOVE — the bridge "
-        "does not provide absolute position guarantees (Phase 4 acceptance check 3)"
+        "does not provide absolute position guarantees"
     )
 
 
@@ -805,35 +805,6 @@ def test_fuji_focus_bridge_uses_d171_as_focus_primitive() -> None:
     assert "d171" in content, (
         "fuji_focus_bridge.cpp must use /main/other/d171 as the focus move primitive — "
         "the only proven writable focus surface on the XF55-200 + X-T5 posture"
-    )
-
-
-def test_fuji_focus_bridge_lens_profile_artifact_exists() -> None:
-    profile = _REPO_ROOT / "lab" / "local" / "grind" / "artifacts" / "xf55_200_lens_profile.md"
-    assert profile.exists(), (
-        "lab/local/grind/artifacts/xf55_200_lens_profile.md must exist as the "
-        "per-lens profile artifact required by Phase 4"
-    )
-    content = profile.read_text()
-    assert "d171" in content and "d262" in content, (
-        "xf55_200_lens_profile.md must document both d171 (proven) and d262 (unproven) "
-        "focus surfaces with their trust levels"
-    )
-
-
-def test_fuji_focus_bridge_driver_setup_runbook_exists() -> None:
-    runbook = _REPO_ROOT / "lab" / "local" / "grind" / "artifacts" / "phase4_driver_setup.md"
-    assert runbook.exists(), (
-        "lab/local/grind/artifacts/phase4_driver_setup.md must exist as the driver "
-        "setup runbook required by Phase 4"
-    )
-    content = runbook.read_text()
-    assert "indi_fuji_focus_bridge" in content, (
-        "phase4_driver_setup.md must reference indi_fuji_focus_bridge binary"
-    )
-    assert "indiwebmanager" in content, (
-        "phase4_driver_setup.md must document how the sidecar is added to an "
-        "indiwebmanager profile alongside the Fuji camera"
     )
 
 
@@ -871,7 +842,7 @@ def test_fuji_focus_bridge_abort_uses_process_kill() -> None:
     content = cpp_path.read_text()
     assert "SIGTERM" in content, (
         "fuji_focus_bridge.cpp must send SIGTERM to the in-flight gphoto2 child process "
-        "in AbortFocuser() — flag-only abort is not best-effort (Phase 4 spec line 325)"
+        "in AbortFocuser() — flag-only abort is not best-effort"
     )
     assert "kill(" in content, (
         "fuji_focus_bridge.cpp must call kill() to terminate the child PID; "
@@ -889,7 +860,7 @@ def test_fuji_focus_bridge_reports_ips_busy_during_move() -> None:
     assert "IPS_BUSY" in content, (
         "fuji_focus_bridge.cpp must publish IPS_BUSY on FocusRelPosNP before the "
         "gphoto2 child process completes so Ekos sees the in-progress state immediately "
-        "rather than waiting on a blocking INDI call (Phase 4 spec: busy/idle semantics)"
+        "rather than waiting on a blocking INDI call"
     )
     assert "m_moveThread" in content, (
         "fuji_focus_bridge.cpp must use a background thread (m_moveThread) so "

@@ -1093,12 +1093,12 @@ def test_managed_session_events_create_directory_lazily(
 def test_events_are_emitted_to_storage_when_session_id_set(
     tmp_path: Path, tmp_store: FilesystemSessionStore
 ) -> None:
-    session = RuntimeSession(session_id="test-session-phase3")
+    session = RuntimeSession(session_id="test-session-events")
     session.state = ClawState.CONNECT
 
     # Write session directory so store can append events
     record = SessionRecord(
-        session_id="test-session-phase3",
+        session_id="test-session-events",
         started_at=datetime(2026, 5, 11, tzinfo=UTC),
         updated_at=datetime(2026, 5, 11, tzinfo=UTC),
         state=ClawState.CONNECT,
@@ -1952,7 +1952,7 @@ def test_conflict_during_capture_resumes_to_capture_not_target_acquired(
 
     Pairing TARGET_ACQUIRED with workflow_intent=CAPTURE is inconsistent:
     target_acquired is a pre-centering hold state and should never carry a
-    capture-phase intent (spec line 742).
+    capture workflow intent (spec line 742).
     """
     mount = FakeMountBackend()
     conflict_event = DeviceActivityEvent(

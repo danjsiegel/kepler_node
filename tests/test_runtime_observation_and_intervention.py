@@ -1,4 +1,4 @@
-"""Tests for Phase 2 imaging/verification.py and evaluate_guard quality_recommendation.
+"""Tests for runtime observation, verification, and intervention wiring.
 
 Covers:
 - VerificationSolveHelper wraps a solver with audit context
@@ -403,7 +403,7 @@ def test_camera_keepalive_fires_when_ekos_idle(tmp_path: Path) -> None:
 def test_camera_keepalive_skipped_when_paused_sequence_exposure_active(tmp_path: Path) -> None:
     """camera_keepalive() must skip heartbeat when Ekos is paused but exposure_active=True.
 
-    Finding 1 (phase3_check_round1): a paused sequence with exposure_active=True
+    Regression guard: a paused sequence with exposure_active=True
     means a frame is still being captured on the normal INDI/Ekos path.  A
     gphoto2 heartbeat would race with that active exposure.  The gate must
     check exposure_active independently of the sequence-level paused flag.
@@ -756,7 +756,7 @@ def test_frame_watcher_loop_rolling_state_advances_across_frames(tmp_path: Path)
 
 
 # ---------------------------------------------------------------------------
-# resume() wires ekos.resume() — Fix 1
+# resume() hands control back to Ekos
 # ---------------------------------------------------------------------------
 
 
@@ -804,7 +804,7 @@ def test_resume_stays_paused_when_ekos_resume_fails(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# poll_ekos_observation() controller method — Fix 2
+# poll_ekos_observation() controller method
 # ---------------------------------------------------------------------------
 
 
@@ -827,7 +827,7 @@ def test_poll_ekos_observation_delegates_to_adapter(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _check_conflicts drains ekos.observe() — Fix 2
+# _check_conflicts drains ekos.observe()
 # ---------------------------------------------------------------------------
 
 
@@ -857,7 +857,7 @@ def test_check_conflicts_drains_ekos_observe(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _ekos_observation_loop background task — Fix 2
+# _ekos_observation_loop background task
 # ---------------------------------------------------------------------------
 
 
@@ -901,7 +901,7 @@ def test_mount_backend_protocol_has_poll_activity() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _check_conflicts calls mount.poll_activity() — acceptance check 4
+# _check_conflicts calls mount.poll_activity()
 # ---------------------------------------------------------------------------
 
 
@@ -920,7 +920,7 @@ def test_check_conflicts_calls_mount_poll_activity(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _serve.py wires DBusEkosAdapter — acceptance check 3 runtime path
+# _serve.py wires DBusEkosAdapter for the runtime path
 # ---------------------------------------------------------------------------
 
 
@@ -938,7 +938,7 @@ def test_serve_wires_dbus_ekos_adapter() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 acceptance check: canonical absolute-state model
+# Canonical absolute-state model
 # ---------------------------------------------------------------------------
 
 
@@ -1049,7 +1049,7 @@ def test_canonical_absolute_state_safe_to_resume() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 acceptance check: broker seam
+# Broker seam
 # ---------------------------------------------------------------------------
 
 
@@ -1079,7 +1079,7 @@ def test_indiwebmanager_broker_backend_unreachable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 acceptance check: canonical_state() synthesis on ClawController
+# canonical_state() synthesis on ClawController
 # ---------------------------------------------------------------------------
 
 
@@ -1125,7 +1125,7 @@ def test_canonical_state_unknown_when_ekos_unavailable(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 acceptance check: pause-acquire-act-release-resume workflow
+# Pause-acquire-act-release-resume workflow
 # ---------------------------------------------------------------------------
 
 
@@ -1216,7 +1216,7 @@ def test_release_control_resets_intervention_window(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 correctness: contradictory-state blocking
+# Contradictory-state blocking
 # ---------------------------------------------------------------------------
 
 
@@ -1323,7 +1323,7 @@ def test_confirm_ekos_paused_stays_requested_when_recent_activity(tmp_path: Path
 def test_confirm_ekos_paused_stays_requested_when_queued_mount_activity(tmp_path: Path) -> None:
     """confirm_ekos_paused() must drain observation queues before the settle check.
 
-    Finding 2 (phase3_check_round1): the background mount-observation loop queues
+    Regression guard: the background mount-observation loop queues
     events that are normally drained by _check_conflicts().  If
     confirm_ekos_paused() does not drain those queues itself, a queued
     MOUNT_SLEW_STARTED is invisible to _last_significant_activity_at and the
@@ -1394,7 +1394,7 @@ def test_confirm_ekos_paused_stays_requested_when_queued_mount_activity(tmp_path
 def test_pause_on_conflict_calls_ekos_pause(tmp_path: Path) -> None:
     """_pause_on_conflict() must call ekos.pause() before setting window to REQUESTED.
 
-    Finding 3 (check_round2): the external-conflict path must implement the
+    Regression guard: the external-conflict path must implement the
     full pause-acquire-act-release-resume handoff, which begins with
     "Kepler requests that Ekos pause" (spec §Control Handoff Protocol step 2).
     Previously _pause_on_conflict() only called session.pause() and set the
@@ -1414,14 +1414,14 @@ def test_pause_on_conflict_calls_ekos_pause(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: broker freshness and device_path_available in canonical_state()
+# Broker freshness and device_path_available in canonical_state()
 # ---------------------------------------------------------------------------
 
 
 def test_canonical_state_stale_broker_snapshot_degrades_to_unknown(tmp_path: Path) -> None:
     """canonical_state() must degrade broker_state to UNKNOWN when snapshot is stale.
 
-    Phase 3: if the broker snapshot is older than its freshness TTL, the
+    If the broker snapshot is older than its freshness TTL, the
     synthesized canonical state must treat the broker as UNKNOWN rather than
     propagating an unreliable READY value.
     """
@@ -1451,7 +1451,7 @@ def test_canonical_state_stale_broker_snapshot_degrades_to_unknown(tmp_path: Pat
 def test_canonical_state_device_path_unavailable_degrades_broker(tmp_path: Path) -> None:
     """canonical_state() must report DEGRADED when broker is READY but device path is unavailable.
 
-    Phase 3: device_path_available=False means the INDI path is not accepting
+    device_path_available=False means the INDI path is not accepting
     connections even though the broker process reports READY.  The canonical
     synthesis must treat this as DEGRADED so intervention policy does not proceed
     on a broken device path.
@@ -1542,14 +1542,14 @@ def test_canonical_state_intervention_not_safe_with_degraded_broker(tmp_path: Pa
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 round 2: Finding 1 — canonical_state() gates confirm_ekos_paused/resume
+# canonical_state() gates confirm_ekos_paused() and resume()
 # ---------------------------------------------------------------------------
 
 
 def test_confirm_ekos_paused_stays_requested_when_broker_unknown(tmp_path: Path) -> None:
     """confirm_ekos_paused() must leave window REQUESTED when broker is UNKNOWN.
 
-    Finding 1 (phase3_check_round1): confirm_ekos_paused() must route through
+    Regression guard: confirm_ekos_paused() must route through
     canonical_state() so broker freshness is part of the pause-confirmation
     decision.  An UNKNOWN broker means the device path cannot be verified.
     """
@@ -1589,7 +1589,7 @@ def test_confirm_ekos_paused_stays_requested_when_broker_unknown(tmp_path: Path)
 def test_resume_blocks_when_broker_unknown(tmp_path: Path) -> None:
     """resume() must stay PAUSED when the canonical broker state is UNKNOWN.
 
-    Finding 1 (phase3_check_round1): resume() must route through canonical_state()
+    Regression guard: resume() must route through canonical_state()
     so broker state is checked before handing back the device path.  An UNKNOWN
     broker means we cannot verify that the INDI path is safe to return to Ekos.
     """
@@ -1631,14 +1631,14 @@ def test_resume_blocks_when_broker_unknown(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 round 2: Finding 3 — external mount slew detected by poll_activity()
+# External mount slew detection via poll_activity()
 # ---------------------------------------------------------------------------
 
 
 def test_external_mount_slew_reaches_check_conflicts_and_pauses_session(tmp_path: Path) -> None:
     """An externally-initiated mount slew must trigger _check_conflicts() pause.
 
-    Finding 3 (phase3_check_round1): poll_activity() must detect external mount
+    Regression guard: poll_activity() must detect external mount
     motion (when no Kepler slew is pending) and emit MOUNT_SLEW_STARTED with
     authored_by='external'.  _check_conflicts() must then detect this as a
     conflict (no matching authored record) and pause the session.
@@ -1676,7 +1676,7 @@ def test_poll_activity_emits_external_slew_event_when_no_kepler_slew_pending(
 ) -> None:
     """poll_activity() must emit MOUNT_SLEW_STARTED with authored_by='external' for external motion.
 
-    Finding 3 (phase3_check_round1): when no Kepler slew is pending and INDI
+    Regression guard: when no Kepler slew is pending and INDI
     reports the mount is slewing, poll_activity() must queue an event so the
     conflict-detection path can react.
     """
@@ -1762,7 +1762,7 @@ def test_poll_activity_clears_external_slew_flag_when_slew_stops(tmp_path: Path)
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 round-3 fixes
+# Terminal-session ingestion and watcher reset guards
 # ---------------------------------------------------------------------------
 
 
