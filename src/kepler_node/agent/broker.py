@@ -22,6 +22,7 @@ Spec reference: V1_1_HANDOFF.md §INDI Broker / Semaphore (lines 139-165)
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
@@ -113,6 +114,18 @@ class BrokerBackend(Protocol):
         """
         ...
 
+    def restart_active_profile(self) -> str | None:
+        """Restart the active driver profile when the broker supports it."""
+        ...
+
+    def stop_active_profile(self) -> str | None:
+        """Stop the active driver profile and return its profile name."""
+        ...
+
+    def start_profile(self, profile_name: str) -> None:
+        """Start the named driver profile."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Stub / null backend (safe default)
@@ -135,6 +148,15 @@ class StubBrokerBackend:
 
     def is_reachable(self) -> bool:
         return True
+
+    def restart_active_profile(self) -> str | None:
+        return None
+
+    def stop_active_profile(self) -> str | None:
+        return None
+
+    def start_profile(self, profile_name: str) -> None:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +207,29 @@ class IndiWebManagerBrokerBackend:
             _logger.debug("IndiWebManagerBrokerBackend: GET %s failed: %s", path, exc)
             return None
 
+    def _status_payload(self) -> dict | None:
+        """Return the normalized indiwebmanager status payload."""
+        payload = self._get_json("/api/server/status")
+        if isinstance(payload, list):
+            return payload[0] if payload else None
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def _post(self, path: str) -> bool:
+        """Send a POST request to the given path; return True on success."""
+        import urllib.error
+        import urllib.request
+
+        url = f"{self._base_url}{path}"
+        req = urllib.request.Request(url, method="POST", data=b"")
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout):
+                return True
+        except (urllib.error.URLError, OSError) as exc:
+            _logger.debug("IndiWebManagerBrokerBackend: POST %s failed: %s", path, exc)
+            return False
+
     def snapshot(self) -> BrokerSnapshot:
         """Return a normalized broker snapshot from indiwebmanager.
 
@@ -198,7 +243,7 @@ class IndiWebManagerBrokerBackend:
         """
         now = datetime.now(UTC)
 
-        status_data = self._get_json("/api/server/status")
+        status_data = self._status_payload()
         if status_data is None:
             return BrokerSnapshot(
                 broker_state=BrokerRuntimeState.UNAVAILABLE,
@@ -234,4 +279,60 @@ class IndiWebManagerBrokerBackend:
 
     def is_reachable(self) -> bool:
         """Return True when indiwebmanager responds on the status endpoint."""
-        return self._get_json("/api/server/status") is not None
+        return self._status_payload() is not None
+
+    def _wait_for_server_state(
+        self,
+        *,
+        running: bool,
+        profile_name: str | None = None,
+        timeout_seconds: float = 15.0,
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            status_data = self._status_payload()
+            if status_data is None:
+                time.sleep(0.5)
+                continue
+
+            server_running = str(status_data.get("status", "False")).lower() == "true"
+            active_profile = status_data.get("active_profile") or None
+            if running:
+                if server_running and (profile_name is None or active_profile == profile_name):
+                    return
+            elif not server_running:
+                return
+
+            time.sleep(0.5)
+
+        state_name = "running" if running else "stopped"
+        raise RuntimeError(f"indiwebmanager did not reach {state_name} state in time")
+
+    def stop_active_profile(self) -> str | None:
+        """Stop the active indiwebmanager profile and return its name."""
+        status_data = self._status_payload()
+        if status_data is None:
+            raise RuntimeError("indiwebmanager status endpoint is unavailable")
+
+        profile_name = status_data.get("active_profile") or None
+        if not self._post("/api/server/stop"):
+            raise RuntimeError("indiwebmanager could not stop the active profile")
+        self._wait_for_server_state(running=False)
+        return profile_name
+
+    def start_profile(self, profile_name: str) -> None:
+        """Start the requested indiwebmanager profile."""
+        from urllib.parse import quote
+
+        encoded_name = quote(profile_name, safe="")
+        if not self._post(f"/api/server/start/{encoded_name}"):
+            raise RuntimeError(f"indiwebmanager could not start profile '{profile_name}'")
+        self._wait_for_server_state(running=True, profile_name=profile_name)
+
+    def restart_active_profile(self) -> str | None:
+        """Restart the active indiwebmanager profile and return its name."""
+        profile_name = self.stop_active_profile()
+        if not profile_name:
+            return None
+        self.start_profile(profile_name)
+        return profile_name

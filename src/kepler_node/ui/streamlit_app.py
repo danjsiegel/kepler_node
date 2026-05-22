@@ -671,7 +671,7 @@ with session_tab:
 
         # --- Session controls ---
         st.subheader("Controls")
-        col_p, col_r, col_s2, col_rl = st.columns(4)
+        col_p, col_r, col_s2, col_rc, col_rl = st.columns(5)
 
         with col_p:
             if st.button("⏸ Pause", disabled=(state == "paused")):
@@ -696,6 +696,18 @@ with session_tab:
                 try:
                     resp = client.post_session_stop()
                     st.success(resp.get("message", "Stopped"))
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
+        with col_rc:
+            if st.button(
+                "🩹 Recover Camera",
+                disabled=(state not in {"ready", "paused", "target_acquired"}),
+            ):
+                try:
+                    resp = client.post_camera_recover()
+                    st.success(resp.get("message", "Camera recovery completed"))
                     st.rerun()
                 except Exception as exc:
                     st.error(str(exc))

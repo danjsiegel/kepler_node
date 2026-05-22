@@ -11,8 +11,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
 from kepler_node.agent.authorship import AuthorshipTracker
+from kepler_node.agent.broker import BrokerRuntimeState, BrokerSnapshot, StubBrokerBackend
 from kepler_node.agent.claw import ClawController
+from kepler_node.agent.ekos import StubEkosAdapter
 from kepler_node.agent.interfaces import (
     NetworkMode,
     PowerStatus,
@@ -95,17 +98,79 @@ class _FakeMount:
 
 
 class _FakeCamera:
-    def connect(self, s: CameraSettings) -> None:
-        pass
+    def __init__(self, *, fail_connect: bool = False) -> None:
+        self.fail_connect = fail_connect
+        self.connect_calls = 0
+        self.disconnect_calls = 0
+        self.recovery_calls = 0
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+        if self.fail_connect:
+            raise RuntimeError("still jammed")
 
     def disconnect(self) -> None:
-        pass
+        self.disconnect_calls += 1
 
     def capture(self, r: CaptureRequest) -> CaptureResult:
         return CaptureResult(image_path=Path("/tmp/t.jpg"), metadata={})
 
+    def heartbeat(self) -> bool:
+        return True
+
+    def apply_settings(self, settings: CameraSettings) -> CameraSettings:
+        return settings
+
+    def recover_stuck_camera_files(self, destination_dir: Path) -> list[Path]:
+        self.recovery_calls += 1
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        recovered = destination_dir / "recovered-DSCF0003.raf"
+        recovered.touch()
+        return [recovered]
+
     def activity_events(self) -> list:
         return []
+
+
+class _FakeBroker(StubBrokerBackend):
+    def __init__(self, *, profile_name: str = "Kepler-Starter-Rig", restart_error: str | None = None) -> None:
+        self.profile_name = profile_name
+        self.restart_error = restart_error
+        self.restart_calls = 0
+        self.stop_calls = 0
+        self.start_calls = 0
+
+    def snapshot(self) -> BrokerSnapshot:
+        return BrokerSnapshot(
+            broker_state=BrokerRuntimeState.READY,
+            profile_active=self.profile_name,
+            device_path_available=True,
+        )
+
+    def restart_active_profile(self) -> str | None:
+        self.restart_calls += 1
+        if self.restart_error is not None:
+            raise RuntimeError(self.restart_error)
+        return self.profile_name
+
+    def stop_active_profile(self) -> str | None:
+        self.stop_calls += 1
+        if self.restart_error is not None:
+            raise RuntimeError(self.restart_error)
+        return self.profile_name
+
+    def start_profile(self, profile_name: str) -> None:
+        self.start_calls += 1
+        if self.restart_error is not None:
+            raise RuntimeError(self.restart_error)
+
+
+class _BusyEkosAdapter(StubEkosAdapter):
+    def status(self) -> NormalizedEkosSnapshot:
+        return NormalizedEkosSnapshot(
+            ekos_state=EkosRuntimeState.RUNNING,
+            exposure_active=True,
+        )
 
 
 class _FakeSolver:
@@ -118,6 +183,9 @@ def _make(
     tmp_path: Path,
     *,
     node: _FakeNode | None = None,
+    camera: _FakeCamera | None = None,
+    broker: _FakeBroker | None = None,
+    ekos_adapter: object | None = None,
 ) -> ClawController:
     base = tmp_path
     base.mkdir(parents=True, exist_ok=True)
@@ -127,12 +195,14 @@ def _make(
         session=session,
         node_backend=node or _FakeNode(),
         mount_backend=_FakeMount(),
-        camera_backend=_FakeCamera(),
+        camera_backend=camera or _FakeCamera(),
         solver_backend=_FakeSolver(),
         store=FilesystemSessionStore(data_root=base),
         authorship_tracker=AuthorshipTracker(),
         verification_dir=vdir,
         test_exposure_seconds=1.0,
+        broker_backend=broker,
+        ekos_adapter=ekos_adapter,
     )
 
 
@@ -732,3 +802,34 @@ def test_release_control_action_response_includes_terminal_session_uncleared_blo
     assert "terminal_session_uncleared" in blocker_names, (
         "release-control response must include terminal_session_uncleared blocker"
     )
+
+
+def test_camera_recover_returns_ok_when_recovery_succeeds(tmp_path: Path) -> None:
+    session = RuntimeSession(session_id="sess-cam-rec-01", state=ClawState.READY)
+    camera = _FakeCamera()
+    broker = _FakeBroker()
+    ctrl = _make(session, tmp_path, camera=camera, broker=broker)
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.post("/api/v1/camera/recover")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "ready"
+    assert "recovery succeeded" in data["message"]
+    assert broker.stop_calls == 1
+    assert broker.start_calls == 1
+    assert camera.disconnect_calls == 1
+    assert camera.connect_calls == 1
+    assert camera.recovery_calls == 1
+
+
+def test_camera_recover_returns_409_when_ekos_is_busy(tmp_path: Path) -> None:
+    session = RuntimeSession(session_id="sess-cam-rec-02", state=ClawState.READY)
+    ctrl = _make(session, tmp_path, ekos_adapter=_BusyEkosAdapter())
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.post("/api/v1/camera/recover")
+
+    assert resp.status_code == 409
+    assert "Ekos" in resp.json()["detail"]

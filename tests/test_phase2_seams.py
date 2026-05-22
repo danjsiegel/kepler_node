@@ -17,11 +17,18 @@ from pathlib import Path
 from typing import Iterable
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from kepler_node.agent.interfaces import (
+    DeviceActivityEvent,
+    NetworkMode,
+    PowerStatus,
+    ServiceHealth,
+    StorageStatus,
+    TimeSource,
+    TimeStatus,
+)
 from kepler_node.imaging.protocols import SolveFailureCategory, SolveResult
-from kepler_node.imaging.verification import VerificationSolveHelper, VerificationSolveResult
-
+from kepler_node.imaging.verification import VerificationSolveHelper
+from kepler_node.mount.protocols import MountPosition
 
 # ---------------------------------------------------------------------------
 # Helpers: fake SolverBackend
@@ -137,18 +144,6 @@ def test_verification_solve_blind_flag_passed(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-from kepler_node.agent.interfaces import (
-    DeviceActivityEvent,
-    NetworkMode,
-    PowerStatus,
-    ServiceHealth,
-    StorageStatus,
-    TimeSource,
-    TimeStatus,
-)
-from kepler_node.mount.protocols import MountPosition
-
-
 class _FakeNode:
     def network_mode(self) -> NetworkMode:
         return NetworkMode.FIELD_HOTSPOT
@@ -212,8 +207,7 @@ class _FakeCamera:
         pass
 
     def capture(self, request: object) -> object:
-        from kepler_node.camera.protocols import CaptureResult
-        from kepler_node.camera.protocols import CaptureRequest
+        from kepler_node.camera.protocols import CaptureRequest, CaptureResult
 
         req: CaptureRequest = request  # type: ignore[assignment]
         path = req.destination_dir / "test_frame.jpg"
@@ -526,7 +520,7 @@ def test_observe_landed_frame_skips_evaluate_guard_outside_capture(tmp_path: Pat
 
 def test_observe_landed_frame_with_autofocus_recommendation(tmp_path: Path) -> None:
     """Rolling session autofocus recommendation is forwarded to evaluate_guard."""
-    from kepler_node.agent.ekos import EkosSequenceStatus, StubEkosAdapter
+    from kepler_node.agent.ekos import StubEkosAdapter
     from kepler_node.agent.session import ClawState
     from kepler_node.imaging.frame_quality import FrameQualitySession
 
@@ -935,7 +929,6 @@ def test_serve_wires_dbus_ekos_adapter() -> None:
     import inspect
 
     from kepler_node.api._serve import make_dev_app
-    from kepler_node.agent.ekos import DBusEkosAdapter
 
     src = inspect.getsource(make_dev_app)
     assert "DBusEkosAdapter" in src, (
@@ -1567,7 +1560,7 @@ def test_confirm_ekos_paused_stays_requested_when_broker_unknown(tmp_path: Path)
         InterventionWindowState,
         NormalizedEkosSnapshot,
     )
-    from kepler_node.agent.broker import BrokerSnapshot, BrokerRuntimeState, StubBrokerBackend
+    from kepler_node.agent.broker import BrokerRuntimeState, BrokerSnapshot, StubBrokerBackend
     from kepler_node.agent.session import ClawState
 
     ekos = MagicMock()
@@ -1603,7 +1596,7 @@ def test_resume_blocks_when_broker_unknown(tmp_path: Path) -> None:
     from datetime import timedelta
 
     from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
-    from kepler_node.agent.broker import BrokerSnapshot, BrokerRuntimeState, StubBrokerBackend
+    from kepler_node.agent.broker import BrokerRuntimeState, BrokerSnapshot, StubBrokerBackend
     from kepler_node.agent.session import ClawState, WorkflowIntent
 
     ekos = MagicMock()
@@ -1780,8 +1773,8 @@ def test_observe_landed_frame_no_ingest_after_terminal_completed(tmp_path: Path)
     state machine is already in a terminal state; new frames must not be
     appended to the completed session's record.
     """
-    from kepler_node.imaging.frame_quality import FrameQualitySession
     from kepler_node.agent.session import ClawState
+    from kepler_node.imaging.frame_quality import FrameQualitySession
 
     ctrl = _make_controller(tmp_path)
     ctrl.session.state = ClawState.COMPLETED  # terminal — session_id still "sess-test"
@@ -1801,8 +1794,8 @@ def test_observe_landed_frame_no_ingest_after_terminal_completed(tmp_path: Path)
 
 def test_observe_landed_frame_no_ingest_after_terminal_failed(tmp_path: Path) -> None:
     """observe_landed_frame must not persist frames when the session is FAILED."""
-    from kepler_node.imaging.frame_quality import FrameQualitySession
     from kepler_node.agent.session import ClawState
+    from kepler_node.imaging.frame_quality import FrameQualitySession
 
     ctrl = _make_controller(tmp_path)
     ctrl.session.state = ClawState.FAILED

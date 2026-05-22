@@ -81,6 +81,10 @@ class KeplerApiClient:
         """POST /api/v1/session/resume"""
         return self._post("/api/v1/session/resume")
 
+    def post_camera_recover(self) -> dict[str, Any]:
+        """POST /api/v1/camera/recover"""
+        return self._post("/api/v1/camera/recover")
+
     def post_session_release_control(self) -> dict[str, Any]:
         """POST /api/v1/session/release-control"""
         return self._post("/api/v1/session/release-control")

@@ -10,21 +10,16 @@ Covers:
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
 from types import ModuleType
 from unittest.mock import MagicMock
-
-import pytest
 
 from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
 from kepler_node.agent.ekos import (
     DBusEkosAdapter,
     EkosAdapterProtocol,
-    EkosSequenceStatus,
     StubEkosAdapter,
 )
 from kepler_node.agent.interfaces import DeviceActivityEventType
-
 
 # ---------------------------------------------------------------------------
 # DeviceActivityEventType: Phase 2 observation events exist

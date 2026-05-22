@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from kepler_node.agent.authorship import AuthorshipTracker
 from kepler_node.agent.broker import IndiWebManagerBrokerBackend
 from kepler_node.agent.claw import ClawController
-from kepler_node.agent.ekos import DBusEkosAdapter, StubEkosAdapter
+from kepler_node.agent.ekos import DBusEkosAdapter
 from kepler_node.agent.node_management import LocalNodeManagementBackend
 from kepler_node.agent.session import RuntimeSession
 from kepler_node.api.app import build_app

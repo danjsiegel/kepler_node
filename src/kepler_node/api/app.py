@@ -18,28 +18,10 @@ import logging
 import socket as _socket
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query
-
-_logger = logging.getLogger(__name__)
-
-# How often the lifespan background task pings the camera to prevent
-# auto-power-off.  Must be shorter than the Fuji body's ~5-minute idle timer.
-_KEEPALIVE_INTERVAL_SECONDS = 90
-
-# Poll interval for the Ekos frame-landing watcher.
-_WATCHER_POLL_INTERVAL_SECONDS = 2.0
-
-# Poll interval for the Ekos read-only observation loop (focus, temperature,
-# sequence status).  5 seconds provides timely event population without hammering
-# the DBus interface.
-_EKOS_OBSERVATION_INTERVAL_SECONDS = 5.0
-
-# Poll interval for the mount read-only observation loop.  Kept equal to the
-# Ekos interval so external mount motion is noticed at roughly the same cadence
-# as Ekos capture-state changes.
-_MOUNT_OBSERVATION_INTERVAL_SECONDS = 5.0
 
 from kepler_node.agent.claw import ClawController
 from kepler_node.agent.interfaces import ReadinessCondition, TimeSource, TimeStatus
@@ -68,6 +50,25 @@ from kepler_node.api.models import (
     TimeConfirmRequest,
     TimeConfirmResponse,
 )
+
+_logger = logging.getLogger(__name__)
+
+# How often the lifespan background task pings the camera to prevent
+# auto-power-off.  Must be shorter than the Fuji body's ~5-minute idle timer.
+_KEEPALIVE_INTERVAL_SECONDS = 90
+
+# Poll interval for the Ekos frame-landing watcher.
+_WATCHER_POLL_INTERVAL_SECONDS = 2.0
+
+# Poll interval for the Ekos read-only observation loop (focus, temperature,
+# sequence status).  5 seconds provides timely event population without hammering
+# the DBus interface.
+_EKOS_OBSERVATION_INTERVAL_SECONDS = 5.0
+
+# Poll interval for the mount read-only observation loop.  Kept equal to the
+# Ekos interval so external mount motion is noticed at roughly the same cadence
+# as Ekos capture-state changes.
+_MOUNT_OBSERVATION_INTERVAL_SECONDS = 5.0
 
 # Human-readable labels for operator-facing time-source warnings.
 _TIME_SOURCE_LABEL: dict[TimeSource, str] = {
@@ -765,6 +766,19 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
 
         result = controller.resume()
         return _action_resp(controller, result.message)
+
+    # ------------------------------------------------------------------ #
+    # POST /api/v1/camera/recover                                         #
+    # ------------------------------------------------------------------ #
+
+    @app.post("/api/v1/camera/recover", response_model=ActionResponse)
+    def post_camera_recover() -> ActionResponse:
+        """Run the bounded manual camera recovery sequence."""
+        try:
+            result = controller.recover_camera_session()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _action_resp(controller, result.message, next_state=result.next_state)
 
     # ------------------------------------------------------------------ #
     # POST /api/v1/session/release-control                                 #

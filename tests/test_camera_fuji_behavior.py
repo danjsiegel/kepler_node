@@ -14,13 +14,12 @@ All tests use subprocess.run mocks so the live camera is never required.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from kepler_node.camera.gphoto2 import Gphoto2CameraBackend
 from kepler_node.camera.protocols import CameraSettings, CaptureRequest, ShutterPreference
-
 
 # ---------------------------------------------------------------------------
 # Helpers

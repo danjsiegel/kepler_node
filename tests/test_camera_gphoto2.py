@@ -306,6 +306,73 @@ def test_connect_drains_pending_transfer_before_config_writes() -> None:
     assert drain_idx < set_idx, "drain must run before first --set-config"
 
 
+def test_recover_stuck_camera_files_downloads_and_deletes_listed_files(tmp_path: Path) -> None:
+    backend = _make_backend()
+    captured_cmds: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: object) -> MagicMock:
+        captured_cmds.append(cmd)
+        joined = " ".join(cmd)
+        if "--wait-event-and-download" in joined:
+            return _proc(returncode=0)
+        if "--list-files" in cmd:
+            return _proc(
+                stdout=(
+                    "There is no file in folder '/'.\n"
+                    "There is 1 file in folder '/store_10000001'.\n"
+                    "#1     DSCF0003.raf               rd 80337 KB application/x-unknown 1779459132\n"
+                    "There is no file in folder '/store_10000002'.\n"
+                ),
+                returncode=0,
+            )
+        if "--get-file" in cmd:
+            output_path = Path(cmd[cmd.index("--filename") + 1])
+            output_path.touch()
+            return _proc(returncode=0, stdout=f"Saving file as {output_path}\n")
+        if "--delete-file" in cmd:
+            return _proc(returncode=0)
+        return _proc(returncode=0)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        recovered = backend.recover_stuck_camera_files(tmp_path)
+
+    assert len(recovered) == 1
+    assert recovered[0].name.endswith("DSCF0003.raf")
+    get_calls = [cmd for cmd in captured_cmds if "--get-file" in cmd]
+    delete_calls = [cmd for cmd in captured_cmds if "--delete-file" in cmd]
+    assert get_calls, "camera recovery must download listed stale files"
+    assert delete_calls, "camera recovery must delete listed stale files from camera RAM"
+    assert "/store_10000001" in get_calls[0]
+
+
+def test_recover_stuck_camera_files_returns_drained_file_when_no_listed_files_remain(
+    tmp_path: Path,
+) -> None:
+    backend = _make_backend()
+    drained = tmp_path / "recovered-pending-raf"
+
+    def fake_run(cmd: list[str], **_: object) -> MagicMock:
+        joined = " ".join(cmd)
+        if "--wait-event-and-download" in joined:
+            drained.touch()
+            return _proc(returncode=0, stdout=f"Saving file as {drained}\n")
+        if "--list-files" in cmd:
+            return _proc(
+                stdout=(
+                    "There is no file in folder '/'.\n"
+                    "There is no file in folder '/store_10000001'.\n"
+                    "There is no file in folder '/store_10000002'.\n"
+                ),
+                returncode=0,
+            )
+        return _proc(returncode=0)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        recovered = backend.recover_stuck_camera_files(tmp_path)
+
+    assert recovered == [drained]
+
+
 # ---------------------------------------------------------------------------
 
 

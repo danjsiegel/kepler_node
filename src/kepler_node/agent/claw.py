@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -45,6 +46,12 @@ from kepler_node.storage.models import (
     SessionRecord,
     SessionScope,
 )
+
+if TYPE_CHECKING:
+    from kepler_node.imaging.protocols import QualityCheckResult
+    from kepler_node.imaging.verification import VerificationSolveResult
+
+_logger = logging.getLogger(__name__)
 
 # Reconnect backoff ladder (spec line 1125: ~5s, 15s, 30s per attempt)
 _RECONNECT_BACKOFF_SECONDS = [5.0, 15.0, 30.0]
@@ -566,6 +573,172 @@ class ClawController:
             result.blockers = [blocker]
             return result
 
+    def recover_camera_session(self, *, reason: str = "manual camera recovery") -> TransitionResult:
+        """Run a bounded manual camera-session recovery sequence."""
+        prev = self.session.state
+        if prev not in _CAMERA_KEEPALIVE_STATES:
+            raise ValueError(
+                "camera recovery is only valid from READY, PAUSED, or TARGET_ACQUIRED"
+            )
+
+        ekos_status = self.ekos.status()
+        if (
+            ekos_status.active
+            or ekos_status.exposure_active
+            or ekos_status.autofocus_active
+            or ekos_status.align_active
+        ):
+            raise ValueError(
+                "camera recovery requires Ekos to be idle with no active exposure, focus, or align work"
+            )
+
+        details: dict[str, Any] = {
+            "reason": reason,
+            "restart_used": False,
+            "restarted_profile": None,
+            "recovered_files": [],
+        }
+        self._emit_event(
+            EventType.RECOVERY_ATTEMPT,
+            f"camera recovery: {reason}",
+            EventSeverity.WARNING,
+            details={"reason": reason},
+        )
+
+        stopped_profile: str | None = None
+        recovery_helper = getattr(self.camera, "recover_stuck_camera_files", None)
+        recovery_dir = self.store.data_root / "recovered-camera"
+
+        try:
+            stopped_profile = self.broker.stop_active_profile()
+            if stopped_profile:
+                details["restart_used"] = True
+                details["restarted_profile"] = stopped_profile
+        except Exception as exc:
+            details["broker_stop_error"] = str(exc)
+
+        if stopped_profile and callable(recovery_helper):
+            try:
+                recovered_files = recovery_helper(recovery_dir)
+                details["recovered_files"] = [str(path) for path in recovered_files]
+            except Exception as exc:
+                details["camera_recovery_error"] = str(exc)
+
+        if stopped_profile:
+            try:
+                self.broker.start_profile(stopped_profile)
+            except Exception as exc:
+                details["broker_start_error"] = str(exc)
+
+        try:
+            self.camera.disconnect()
+        except Exception as exc:
+            details["camera_disconnect_error"] = str(exc)
+
+        recovery_error = next(
+            (
+                details[key]
+                for key in ("broker_stop_error", "camera_recovery_error", "broker_start_error")
+                if key in details
+            ),
+            None,
+        )
+
+        try:
+            self.camera.connect()
+        except Exception as exc:
+            blocker_details = {
+                key: str(value) for key, value in details.items() if value is not None
+            }
+            blocker = ReadinessCondition(
+                name="camera_disconnected",
+                severity="blocking",
+                summary=f"Camera recovery failed to restore a trustworthy session: {exc}",
+                operator_action_required=(
+                    "Check the camera/INDI runtime, then retry camera recovery or resume once the camera is healthy"
+                ),
+                details=blocker_details,
+            )
+            self._emit_event(
+                EventType.OPERATOR_ACTION_REQUIRED,
+                f"camera recovery failed: {exc}",
+                EventSeverity.ERROR,
+                details={"error": str(exc), **details},
+            )
+            if prev != ClawState.PAUSED:
+                self.session.pause(
+                    pause_reason="camera_recovery_failed",
+                    resume_state=prev,
+                    workflow_intent=self.session.workflow_intent or WorkflowIntent.CALIBRATION,
+                    operator_action_required=blocker.operator_action_required,
+                )
+                next_state = ClawState.PAUSED
+            else:
+                next_state = ClawState.PAUSED
+            result = self._make_transition(
+                prev,
+                next_state,
+                f"camera recovery failed: {exc}",
+                details=details,
+            )
+            result.blockers = [blocker]
+            return result
+
+        if recovery_error is not None:
+            blocker_details = {
+                key: str(value) for key, value in details.items() if value is not None
+            }
+            blocker = ReadinessCondition(
+                name="camera_disconnected",
+                severity="blocking",
+                summary=f"Camera recovery could not complete cleanly: {recovery_error}",
+                operator_action_required=(
+                    "Check the camera/INDI runtime, then retry camera recovery before resuming imaging"
+                ),
+                details=blocker_details,
+            )
+            self._emit_event(
+                EventType.OPERATOR_ACTION_REQUIRED,
+                f"camera recovery incomplete: {recovery_error}",
+                EventSeverity.ERROR,
+                details={"error": str(recovery_error), **details},
+            )
+            if prev != ClawState.PAUSED:
+                self.session.pause(
+                    pause_reason="camera_recovery_incomplete",
+                    resume_state=prev,
+                    workflow_intent=self.session.workflow_intent or WorkflowIntent.CALIBRATION,
+                    operator_action_required=blocker.operator_action_required,
+                )
+            result = self._make_transition(
+                prev,
+                ClawState.PAUSED,
+                f"camera recovery incomplete: {recovery_error}",
+                details=details,
+            )
+            result.blockers = [blocker]
+            return result
+
+        recovered_count = len(details["recovered_files"])
+        if recovered_count and details["restart_used"]:
+            suffix = "file" if recovered_count == 1 else "files"
+            message = (
+                f"camera recovery succeeded after recovering {recovered_count} camera-side {suffix} "
+                "and restarting the broker profile"
+            )
+        elif details["restart_used"]:
+            message = "camera recovery succeeded after broker profile restart"
+        else:
+            message = "camera recovery succeeded after camera reconnect"
+
+        self._emit_event(
+            EventType.RECOVERY_ATTEMPT,
+            message,
+            EventSeverity.WARNING,
+            details=details,
+        )
+        return self._make_transition(prev, prev, message, details=details)
+
     def observe_landed_frame(
         self,
         image_path: Path,
@@ -590,7 +763,6 @@ class ClawController:
 
         from kepler_node.imaging.frame_quality import FrameQualitySession
         from kepler_node.imaging.ingestion import ingest_frame
-        from kepler_node.imaging.protocols import QualityCheckResult
 
         _local_logger = _lg.getLogger(__name__)
 
@@ -660,10 +832,7 @@ class ClawController:
         """
         from kepler_node.imaging.ingestion import ingest_frame
         from kepler_node.imaging.protocols import QualityCheckResult, QualityClassification
-        from kepler_node.imaging.verification import (
-            VerificationSolveHelper,
-            VerificationSolveResult,
-        )
+        from kepler_node.imaging.verification import VerificationSolveHelper
 
         helper = VerificationSolveHelper(self.solver, reason=reason)
         vr: VerificationSolveResult = helper.solve_for_verification(

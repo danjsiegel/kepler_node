@@ -28,7 +28,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kepler_node.imaging.protocols import SolveResult, SolverBackend
+from kepler_node.imaging.protocols import SolverBackend, SolveResult
 
 _logger = logging.getLogger(__name__)
 

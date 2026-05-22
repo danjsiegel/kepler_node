@@ -10,7 +10,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from kepler_node.agent.authorship import AuthorshipTracker
+from kepler_node.agent.broker import BrokerRuntimeState, BrokerSnapshot, StubBrokerBackend
 from kepler_node.agent.claw import ClawController, TransitionResult
+from kepler_node.agent.ekos import StubEkosAdapter
 from kepler_node.agent.interfaces import (
     DeviceActivityEvent,
     DeviceActivityEventType,
@@ -160,13 +162,17 @@ class FakeCameraBackend:
         self._fail_capture_msg = fail_capture_msg
         self._events: list[DeviceActivityEvent] = []
         self.disconnected = False
+        self.connect_calls = 0
+        self.disconnect_calls = 0
 
     def connect(self) -> None:
+        self.connect_calls += 1
         if self._fail_connect:
             raise RuntimeError(self._connect_error_msg)
 
     def disconnect(self) -> None:
         self.disconnected = True
+        self.disconnect_calls += 1
 
     def heartbeat(self) -> bool:
         return True
@@ -289,6 +295,8 @@ def _make_controller(
     authorship: AuthorshipTracker | None = None,
     verification_dir: Path | None = None,
     tmp_path: Path | None = None,
+    ekos_adapter: object | None = None,
+    broker: object | None = None,
 ) -> ClawController:
     base = tmp_path or Path("/tmp/kepler_test")
     base.mkdir(parents=True, exist_ok=True)
@@ -304,6 +312,8 @@ def _make_controller(
         authorship_tracker=authorship or AuthorshipTracker(),
         verification_dir=vdir,
         test_exposure_seconds=1.0,
+        ekos_adapter=ekos_adapter,
+        broker_backend=broker,
     )
 
 
@@ -2173,6 +2183,49 @@ class _HeartbeatCamera(FakeCameraBackend):
             raise RuntimeError("camera unreachable after keepalive failure")
 
 
+class _RestartableBroker(StubBrokerBackend):
+    def __init__(self, *, profile_name: str = "Kepler-Starter-Rig", restart_error: str | None = None) -> None:
+        self.profile_name = profile_name
+        self.restart_error = restart_error
+        self.restart_calls = 0
+        self.stop_calls = 0
+        self.start_calls = 0
+
+    def snapshot(self) -> BrokerSnapshot:
+        return BrokerSnapshot(
+            broker_state=BrokerRuntimeState.READY,
+            profile_active=self.profile_name,
+            device_path_available=True,
+        )
+
+    def restart_active_profile(self) -> str | None:
+        self.restart_calls += 1
+        if self.restart_error is not None:
+            raise RuntimeError(self.restart_error)
+        return self.profile_name
+
+    def stop_active_profile(self) -> str | None:
+        self.stop_calls += 1
+        if self.restart_error is not None:
+            raise RuntimeError(self.restart_error)
+        return self.profile_name
+
+    def start_profile(self, profile_name: str) -> None:
+        self.start_calls += 1
+        if self.restart_error is not None:
+            raise RuntimeError(self.restart_error)
+
+
+class _BusyEkosAdapter(StubEkosAdapter):
+    def status(self):
+        from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
+
+        return NormalizedEkosSnapshot(
+            ekos_state=EkosRuntimeState.RUNNING,
+            exposure_active=True,
+        )
+
+
 def test_camera_keepalive_skipped_when_state_not_idle(tmp_path: Path) -> None:
     """keepalive is a no-op for states outside _CAMERA_KEEPALIVE_STATES."""
     cam = _HeartbeatCamera(heartbeat_ok=False)
@@ -2237,3 +2290,58 @@ def test_camera_keepalive_allowed_in_paused_and_target_acquired(tmp_path: Path) 
 
         assert result.next_state == state, f"expected to stay in {state}"
         assert "ok" in result.message
+
+
+def test_recover_camera_session_restarts_broker_and_reconnects_camera(tmp_path: Path) -> None:
+    camera = FakeCameraBackend()
+    broker = _RestartableBroker()
+    ctrl = _make_controller(camera=camera, broker=broker, tmp_path=tmp_path)
+    ctrl.session.state = ClawState.READY
+
+    result = ctrl.recover_camera_session(reason="clear dropped image")
+
+    assert broker.stop_calls == 1
+    assert broker.start_calls == 1
+    assert camera.disconnect_calls == 1
+    assert camera.connect_calls == 1
+    assert result.next_state == ClawState.READY
+    assert result.details["restart_used"] is True
+    assert result.details["restarted_profile"] == "Kepler-Starter-Rig"
+    assert "restart" in result.message
+
+
+def test_recover_camera_session_rejects_active_ekos_work(tmp_path: Path) -> None:
+    camera = FakeCameraBackend()
+    broker = _RestartableBroker()
+    ctrl = _make_controller(
+        camera=camera,
+        broker=broker,
+        ekos_adapter=_BusyEkosAdapter(),
+        tmp_path=tmp_path,
+    )
+    ctrl.session.state = ClawState.READY
+
+    with pytest.raises(ValueError, match="Ekos to be idle"):
+        ctrl.recover_camera_session()
+
+    assert broker.stop_calls == 0
+    assert camera.disconnect_calls == 0
+    assert camera.connect_calls == 0
+
+
+def test_recover_camera_session_pauses_when_camera_reconnect_still_fails(tmp_path: Path) -> None:
+    camera = FakeCameraBackend(fail_connect=True, connect_error_msg="still jammed")
+    broker = _RestartableBroker(restart_error="broker restart failed")
+    ctrl = _make_controller(camera=camera, broker=broker, tmp_path=tmp_path)
+    ctrl.session.state = ClawState.READY
+
+    result = ctrl.recover_camera_session()
+
+    assert broker.stop_calls == 1
+    assert broker.start_calls == 0
+    assert camera.disconnect_calls == 1
+    assert camera.connect_calls == 1
+    assert ctrl.session.state == ClawState.PAUSED
+    assert result.next_state == ClawState.PAUSED
+    assert result.blockers[0].name == "camera_disconnected"
+    assert result.details["broker_stop_error"] == "broker restart failed"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 import time
@@ -312,6 +313,114 @@ class Gphoto2CameraBackend:
                 "pending-drain",
                 wait_seconds=2,
             )
+
+    @staticmethod
+    def _parse_list_files_output(output: str) -> list[tuple[str, int, str]]:
+        current_folder: str | None = None
+        entries: list[tuple[str, int, str]] = []
+        folder_re = re.compile(r"^There is \d+ file(?:s)? in folder '([^']+)'\.$")
+        empty_folder_re = re.compile(r"^There is no file in folder '([^']+)'\.$")
+        file_re = re.compile(r"^#(\d+)\s+(\S+)")
+
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            folder_match = folder_re.match(line)
+            if folder_match:
+                current_folder = folder_match.group(1)
+                continue
+
+            if empty_folder_re.match(line):
+                current_folder = None
+                continue
+
+            if current_folder is None:
+                continue
+
+            file_match = file_re.match(line)
+            if file_match:
+                entries.append((current_folder, int(file_match.group(1)), file_match.group(2)))
+
+        return entries
+
+    @staticmethod
+    def _recovery_output_path(destination_dir: Path, source_name: str) -> Path:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        safe_name = Path(source_name).name
+        candidate = destination_dir / f"recovered-{timestamp}-{safe_name}"
+        counter = 1
+        while candidate.exists():
+            candidate = destination_dir / f"recovered-{timestamp}-{counter}-{safe_name}"
+            counter += 1
+        return candidate
+
+    def recover_stuck_camera_files(self, destination_dir: Path) -> list[Path]:
+        """Recover and clear any stale image objects still queued on the camera.
+
+        This is the production recovery path for the live Fuji failure mode we
+        observed: a late RAW can remain in camera-side RAM even after the INDI
+        driver is restarted.  The routine first drains any pending transfer
+        events, then explicitly lists the camera stores, downloads every listed
+        file into the recovery directory, and deletes the camera-side copy so
+        subsequent PTP sessions start cleanly.
+        """
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        recovered = self._drain_pending_transfer(
+            destination_dir,
+            "recovered-pending-",
+            wait_seconds=2,
+        )
+
+        list_result = self._run(["--list-files"], timeout=30)
+        if list_result.returncode != 0:
+            detail = list_result.stderr.strip() or list_result.stdout.strip() or "unknown error"
+            raise RuntimeError(f"gphoto2 list-files failed during camera recovery: {detail}")
+
+        entries = self._parse_list_files_output(list_result.stdout)
+        if not entries:
+            return sorted(recovered)
+
+        grouped: dict[str, list[tuple[int, str]]] = {}
+        for folder, index, filename in entries:
+            grouped.setdefault(folder, []).append((index, filename))
+
+        for folder, folder_entries in grouped.items():
+            for index, filename in sorted(folder_entries, key=lambda item: item[0], reverse=True):
+                output_path = self._recovery_output_path(destination_dir, filename)
+                get_result = self._run(
+                    [
+                        "--folder",
+                        folder,
+                        "--get-file",
+                        str(index),
+                        "--filename",
+                        str(output_path),
+                        "--force-overwrite",
+                    ],
+                    timeout=120,
+                )
+                if get_result.returncode != 0 or not output_path.exists():
+                    detail = get_result.stderr.strip() or get_result.stdout.strip() or "unknown error"
+                    raise RuntimeError(
+                        f"gphoto2 get-file failed during camera recovery for {folder}#{index} ({filename}): {detail}"
+                    )
+
+                delete_result = self._run(
+                    ["--folder", folder, "--delete-file", str(index)],
+                    timeout=30,
+                )
+                if delete_result.returncode != 0:
+                    detail = (
+                        delete_result.stderr.strip()
+                        or delete_result.stdout.strip()
+                        or "unknown error"
+                    )
+                    raise RuntimeError(
+                        f"gphoto2 delete-file failed during camera recovery for {folder}#{index} ({filename}): {detail}"
+                    )
+
+                recovered.append(output_path)
+
+        return sorted(recovered)
 
     def _normalize_capture_setup(self) -> None:
         imageformat_result = self._set_config_first_supported(_RAW_IMAGEFORMAT_ASSIGNMENTS)

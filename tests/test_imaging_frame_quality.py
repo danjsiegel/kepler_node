@@ -21,7 +21,6 @@ from kepler_node.imaging.frame_quality import (
 )
 from kepler_node.imaging.protocols import QualityCheckResult, QualityClassification
 
-
 # ---------------------------------------------------------------------------
 # Synthetic image helpers
 # ---------------------------------------------------------------------------
@@ -475,8 +474,8 @@ async def test_watcher_retries_failed_analysis_on_next_poll(tmp_path: Path) -> N
     import asyncio
     from unittest.mock import MagicMock
 
-    from kepler_node.imaging.watcher import FrameWatcher
     from kepler_node.imaging.protocols import QualityClassification
+    from kepler_node.imaging.watcher import FrameWatcher
 
     output_dir = tmp_path / "retry_out"
     output_dir.mkdir()

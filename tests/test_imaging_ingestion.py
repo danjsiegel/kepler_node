@@ -13,13 +13,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
-
 from kepler_node.imaging.frame_quality import FrameQualitySession
 from kepler_node.imaging.ingestion import _make_frame_id, ingest_frame
 from kepler_node.imaging.protocols import QualityCheckResult, QualityClassification
 from kepler_node.storage.filesystem import FilesystemSessionStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -96,8 +93,8 @@ def test_ingest_frame_creates_frame_record(tmp_path: Path) -> None:
 def test_ingest_frame_writes_to_store(tmp_path: Path) -> None:
     from datetime import UTC, datetime
 
-    from kepler_node.storage.models import SessionRecord
     from kepler_node.agent.session import ClawState
+    from kepler_node.storage.models import SessionRecord
 
     store = FilesystemSessionStore(tmp_path)
     ts = datetime(2025, 6, 1, 2, 0, 0, tzinfo=UTC)
@@ -187,7 +184,6 @@ def test_ingest_frame_action_continue_is_none(tmp_path: Path) -> None:
 
 def test_ingest_frame_action_trigger_autofocus(tmp_path: Path) -> None:
     """HFR drift should produce action_decision='trigger_autofocus'."""
-    import numpy as np
 
     session = FrameQualitySession(window_size=10, hfr_drift_fraction=0.25)
 
