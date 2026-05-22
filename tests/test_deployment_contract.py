@@ -41,6 +41,24 @@ def test_upgrade_sh_stops_services_before_code_changes() -> None:
     )
 
 
+def test_upgrade_sh_discards_unsupported_fuji_focus_bridge_changes_before_pull() -> None:
+    content = (_REPO_ROOT / "upgrade.sh").read_text()
+    assert "discard_unsupported_local_git_changes()" in content, (
+        "upgrade.sh must define a targeted cleanup helper for unsupported local git changes that block upgrades"
+    )
+    assert '"indi/fuji_focus_bridge"' in content, (
+        "upgrade.sh must treat the old Fuji focus bridge tree as discardable upgrade debris now that it is not the supported deployment path"
+    )
+    cleanup_pos = content.find("discard_unsupported_local_git_changes")
+    pull_pos = content.find("git pull")
+    assert cleanup_pos != -1 and cleanup_pos < pull_pos, (
+        "upgrade.sh must discard unsupported Fuji focus bridge changes before attempting git pull"
+    )
+    assert "Local repository has uncommitted changes outside unsupported Fuji focus bridge artifacts" in content, (
+        "upgrade.sh must still fail clearly when unrelated local changes would be overwritten by upgrade"
+    )
+
+
 def test_upgrade_sh_starts_service_unconditionally_when_not_skip_restart() -> None:
     content = (_REPO_ROOT / "upgrade.sh").read_text()
     assert re.search(r"systemctl start kepler-node", content), (

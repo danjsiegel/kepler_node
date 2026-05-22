@@ -38,6 +38,30 @@ ok()   { echo "  ✅ $*"; }
 fail() { echo "  ❌ $*" >&2; exit 1; }
 warn() { echo "  ⚠️  $*"; }
 
+discard_unsupported_local_git_changes() {
+    local unsupported_paths=(
+        "indi/fuji_focus_bridge"
+    )
+    local path
+    local discarded_any=false
+
+    for path in "${unsupported_paths[@]}"; do
+        if ! git diff --quiet -- "${path}" || ! git diff --cached --quiet -- "${path}"; then
+            git checkout -- "${path}" >/dev/null 2>&1 || fail "Could not discard unsupported local changes under ${path}"
+            git reset --quiet HEAD -- "${path}" >/dev/null 2>&1 || fail "Could not unstage unsupported local changes under ${path}"
+            discarded_any=true
+        fi
+    done
+
+    if [[ "${discarded_any}" == "true" ]]; then
+        warn "Discarded unsupported local changes under indi/fuji_focus_bridge before pulling latest code"
+    fi
+
+    if [[ -n "$(git status --porcelain)" ]]; then
+        fail "Local repository has uncommitted changes outside unsupported Fuji focus bridge artifacts. Commit or stash them before upgrading."
+    fi
+}
+
 ensure_indiwebmanager_installed() {
     if command -v indi-web >/dev/null 2>&1 && indi-web --help >/dev/null 2>&1; then
         return 0
@@ -474,6 +498,8 @@ else
 fi
 
 log "Step 2 (cont): Pulling latest code..."
+
+discard_unsupported_local_git_changes
 
 if [[ -n "${TARGET_RELEASE}" ]]; then
     # Already fetched in Step 1b; just check out the target ref
