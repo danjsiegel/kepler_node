@@ -26,7 +26,7 @@ INDIWEBMANAGER_PORT=8624
 INDI_PROFILE_NAME="${KEPLER_INDI_PROFILE_NAME:-Kepler-Starter-Rig}"
 FUJI_CAMERA_DRIVER_LABEL="${KEPLER_FUJI_CAMERA_DRIVER_LABEL:-Kepler Fuji DSLR}"
 INDI_GPHOTO_UPSTREAM_REF="${KEPLER_INDI_GPHOTO_UPSTREAM_REF:-f5fdc3a63014a8da84a70230c25bb5bc565e0dfd}"
-INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL},Fuji Focus Bridge}"
+INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL}}"
 INDIWEBMANAGER_HOME="${KEPLER_INDIWEBMANAGER_HOME:-/var/lib/indiwebmanager}"
 
 # ------------------------------------------------------------------ #
@@ -88,20 +88,6 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 INDIWEB
-}
-
-build_and_install_fuji_focus_bridge() {
-    local bridge_src_dir="${SCRIPT_DIR}/indi/fuji_focus_bridge"
-    local bridge_build_dir="${bridge_src_dir}/build"
-
-    [[ -d "${bridge_src_dir}" ]] || fail "Fuji focus bridge source directory is missing at ${bridge_src_dir}"
-
-    cmake -S "${bridge_src_dir}" -B "${bridge_build_dir}" \
-        || fail "Fuji focus bridge CMake configure failed"
-    cmake --build "${bridge_build_dir}" -j"$(nproc)" \
-        || fail "Fuji focus bridge build failed"
-    cmake --install "${bridge_build_dir}" \
-        || fail "Fuji focus bridge install failed"
 }
 
 build_and_install_kepler_fuji_ccd() {
@@ -525,10 +511,6 @@ apt-get install -y --no-install-recommends build-essential cmake pkg-config git 
 log "Step 3aa: Building and installing Kepler Fuji DSLR capture driver..."
 build_and_install_kepler_fuji_ccd
 ok "Kepler Fuji DSLR capture driver installed"
-
-log "Step 3ab: Building and installing Fuji focus bridge sidecar..."
-build_and_install_fuji_focus_bridge
-ok "Fuji focus bridge sidecar installed"
 
 # ------------------------------------------------------------------ #
 # Step 3b — Refresh managed service units                             #

@@ -249,7 +249,7 @@ index a8ba5998..58223f3a 100644
      if (isSimulation())
          m_CanFocus = false;
      else
-@@ -973,6 +1048,75 @@ bool GPhotoCCD::Disconnect()
+@@ -973,6 +1048,80 @@ bool GPhotoCCD::Disconnect()
  
  bool GPhotoCCD::StartExposure(float duration)
  {
@@ -292,13 +292,18 @@ index a8ba5998..58223f3a 100644
 +                                    if (activeDelayChoice)
 +                                    {
 +                                        LOGF_INFO("Fuji capture delay at exposure start: %s", activeDelayChoice);
++                                        // Treat the delay as "armed" only when its
++                                        // leading numeric value is non-zero and the label
++                                        // is not an explicit off/none keyword.  This handles
++                                        // gphoto2 labels like "0.000s", "2.000s", "10.000s",
++                                        // "0s", "none", "off", etc.
++                                        char *numEnd = nullptr;
++                                        float delaySecs = strtof(activeDelayChoice, &numEnd);
++                                        bool parsedZero = numEnd > activeDelayChoice && delaySecs == 0.0f;
 +                                        captureDelayArmed =
 +                                            strcasestr(activeDelayChoice, "off") == nullptr &&
 +                                            strcasestr(activeDelayChoice, "none") == nullptr &&
-+                                            strcmp(activeDelayChoice, "0") != 0 &&
-+                                            strcmp(activeDelayChoice, "0s") != 0 &&
-+                                            strcmp(activeDelayChoice, "0 sec") != 0 &&
-+                                            strcmp(activeDelayChoice, "0.0") != 0;
++                                            !parsedZero;
 +                                    }
 +                                }
 +                            }
@@ -325,7 +330,7 @@ index a8ba5998..58223f3a 100644
      if (PrimaryCCD.getPixelSizeX() == 0.0)
      {
          LOG_INFO("Please update the CCD Information in the Image Info section before "
-@@ -1473,7 +1617,7 @@ bool GPhotoCCD::grabImage()
+@@ -1473,7 +1622,7 @@ bool GPhotoCCD::grabImage()
  ISwitch * GPhotoCCD::create_switch(const char * basestr, char ** options, int max_opts, int setidx)
  {
      int i;
@@ -338,6 +343,14 @@ diff --git a/indi-gphoto/gphoto_driver.cpp b/indi-gphoto/gphoto_driver.cpp
 index 081d5800..f892cb33 100644
 --- a/indi-gphoto/gphoto_driver.cpp
 +++ b/indi-gphoto/gphoto_driver.cpp
+@@ -165,6 +165,7 @@ struct _gphoto_driver
+     bool supports_temperature;
+     float last_sensor_temp;
+     bool bulb_mode {false};
++    int exposure_event_timeout {10};
+ 
+     DSUSBDriver *dsusb;
+
 @@ -186,6 +186,31 @@ enum
  static char device[64];
  static int RTS_flag = TIOCM_RTS;
@@ -405,6 +418,23 @@ index 081d5800..f892cb33 100644
          return result;
      }
  
+@@ -1151,6 +1177,15 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirror_lock)
+     pthread_mutex_lock(&gphoto->mutex);
+     DEBUGDEVICE(device, INDI::Logger::DBG_DEBUG, "Mutex locked");
+
++    gphoto->exposure_event_timeout = 10;
++    if (is_fuji_camera(gphoto))
++    {
++        uint32_t exposure_wait_seconds = ((exptime_usec + 999999) / 1000000) + 30;
++        if (exposure_wait_seconds < 90)
++            exposure_wait_seconds = 90;
++        gphoto->exposure_event_timeout = static_cast<int>(exposure_wait_seconds);
++    }
++
+     // Set ISO Settings
+     if (gphoto->iso >= 0)
+         gphoto_set_widget_num(gphoto, gphoto->iso_widget, gphoto->iso);
+
 @@ -1376,6 +1402,8 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
          //Set exposure back to original value
          // JM 2018-08-06: Why do we really need to reset values here?
@@ -418,7 +448,7 @@ index 081d5800..f892cb33 100644
      gphoto->command    = 0;
      uint32_t waitMS = 1000;
      bool downloadComplete = false;
-+    const int maxTimeoutCounter = is_fuji_camera(gphoto) ? 30 : 10;
++    const int maxTimeoutCounter = gphoto->exposure_event_timeout > 0 ? gphoto->exposure_event_timeout : 10;
  
      while (1)
      {
@@ -493,3 +523,48 @@ index 081d5800..f892cb33 100644
          return GP_OK;
  
      // If viewfinder not found, nothing to do
+
+@@ -1894,7 +1932,9 @@ static int gphoto_find_all_widgets(gphoto_driver *gphoto)
+
+     if ((gphoto->focus_widget = find_widget(gphoto, "manualfocusdrive")) != nullptr ||
+-            (gphoto->focus_widget = find_widget(gphoto, "manualfocus")) != nullptr)
++            (gphoto->focus_widget = find_widget(gphoto, "manualfocus")) != nullptr ||
++            (strstr(device, "Fuji") != nullptr &&
++             (gphoto->focus_widget = find_widget(gphoto, "d171")) != nullptr))
+     {
+          DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "Focus Widget: %s", gphoto->focus_widget->name);
+     }
+
+@@ -2323,9 +2363,25 @@ int gphoto_manual_focus(gphoto_driver *gphoto, int speed, char *errMsg)
+ int gphoto_manual_focus(gphoto_driver *gphoto, int speed, char *errMsg)
+ {
+      int rc = 0;
++
++    if (!strcmp(gphoto->focus_widget->name, "d171"))
++    {
++        char delta[16] = {0};
++        snprintf(delta, sizeof(delta), "%d", speed);
++
++        rc = gp_widget_set_value(gphoto->focus_widget->widget, delta);
++        if (rc < GP_OK)
++        {
++            snprintf(errMsg, MAXRBUF, "Failed to set Fuji d171 focus delta %s: %s", delta, gp_result_as_string(rc));
++            return rc;
++        }
++    }
++    else
++    {
+
+      switch (gphoto->focus_widget->type)
+      {
+           case GP_WIDGET_RADIO:
+@@
+           default:
+                rc = -1;
+                snprintf(errMsg, MAXRBUF, "Unsupported camera type: %d", gphoto->focus_widget->type);
+                return rc;
+      }
++    }
+
+
+     for (int i = 0; i < 10; i++)

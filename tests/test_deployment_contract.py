@@ -255,17 +255,14 @@ def test_bootstrap_sh_installs_indiwebmanager_via_uv_tool() -> None:
     )
 
 
-def test_bootstrap_and_upgrade_build_fuji_focus_bridge_sidecar() -> None:
+def test_bootstrap_and_upgrade_do_not_build_fuji_focus_bridge_sidecar() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()
-        assert "indi/fuji_focus_bridge" in content, (
-            f"{script_name} must manage the Fuji focus bridge source tree as part of the supported starter-rig path"
+        assert "build_and_install_fuji_focus_bridge" not in content, (
+            f"{script_name} must not build the Fuji focus bridge as part of the supported starter-rig path now that focus is integrated into indi_kepler_fuji_ccd"
         )
-        assert "cmake -S \"${bridge_src_dir}\" -B \"${bridge_build_dir}\"" in content, (
-            f"{script_name} must configure the Fuji focus bridge with CMake before attempting to use it"
-        )
-        assert "cmake --install \"${bridge_build_dir}\"" in content, (
-            f"{script_name} must install the Fuji focus bridge sidecar so indiwebmanager can discover it"
+        assert "Fuji Focus Bridge" not in content, (
+            f"{script_name} must not require Fuji Focus Bridge in the managed indiwebmanager profile"
         )
 
 
@@ -307,6 +304,32 @@ def test_bootstrap_and_upgrade_build_kepler_fuji_camera_driver() -> None:
         )
 
 
+def test_kepler_fuji_patch_bundle_includes_integrated_focus_support() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'find_widget(gphoto, "d171")' in content, (
+        "the tracked Kepler Fuji DSLR patchset must teach the main driver to discover Fuji d171 as its focus widget"
+    )
+    assert 'Failed to set Fuji d171 focus delta %s: %s' in content, (
+        "the tracked Kepler Fuji DSLR patchset must route manual focus through signed Fuji d171 writes in the active camera session"
+    )
+
+
+def test_kepler_fuji_patch_bundle_scales_event_timeout_with_requested_exposure() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'int exposure_event_timeout {10};' in content, (
+        "the tracked Kepler Fuji DSLR patchset must persist a per-exposure event timeout budget on the driver state"
+    )
+    assert 'uint32_t exposure_wait_seconds = ((exptime_usec + 999999) / 1000000) + 30;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must derive Fuji event wait time from the requested exposure instead of a fixed retry ceiling"
+    )
+    assert 'if (exposure_wait_seconds < 90)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must keep a larger minimum wait budget for Fuji capture/download completion"
+    )
+    assert 'const int maxTimeoutCounter = gphoto->exposure_event_timeout > 0 ? gphoto->exposure_event_timeout : 10;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must consume the per-exposure timeout budget in the Fuji event loop"
+    )
+
+
 def test_bootstrap_and_upgrade_wipe_and_recreate_starter_rig_indi_profile() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()
@@ -316,8 +339,8 @@ def test_bootstrap_and_upgrade_wipe_and_recreate_starter_rig_indi_profile() -> N
         assert "KEPLER_INDI_PROFILE_DRIVERS" in content, (
             f"{script_name} must allow the managed indiwebmanager driver set to be overridden"
         )
-        assert 'ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL},Fuji Focus Bridge' in content, (
-            f"{script_name} must default the managed profile to the Kepler Fuji DSLR fork plus focus bridge once the custom camera driver is installed"
+        assert 'ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL}' in content, (
+            f"{script_name} must default the managed profile to the Kepler Fuji DSLR driver without a separate focus bridge"
         )
         assert "/api/drivers" in content, (
             f"{script_name} must validate requested driver labels against indiwebmanager's documented driver catalog instead of bypassing the supported control surface"

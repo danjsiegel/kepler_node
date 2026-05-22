@@ -33,6 +33,13 @@
 
 static std::unique_ptr<FujiFocusBridge> fujiFocusBridge(new FujiFocusBridge());
 
+static bool outputIndicatesUsbBusy(const std::string &output)
+{
+    return output.find("Could not claim the USB device") != std::string::npos ||
+           output.find("Device or resource busy") != std::string::npos ||
+           output.find("error (-53") != std::string::npos;
+}
+
 void ISGetProperties(const char *dev) { fujiFocusBridge->ISGetProperties(dev); }
 void ISNewSwitch(const char *dev, const char *name, ISState *states, char **names, int n)
     { fujiFocusBridge->ISNewSwitch(dev, name, states, names, n); }
@@ -305,6 +312,10 @@ bool FujiFocusBridge::invokeFocusMove(int delta)
     int rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     if (rc != 0)
     {
+        if (outputIndicatesUsbBusy(output))
+        {
+            LOG_ERROR("Focus move failed because gphoto2 could not claim the Fuji USB device. indi_kepler_fuji_ccd already owns the camera, so the focus bridge cannot drive d171 concurrently.");
+        }
         LOGF_ERROR("gphoto2 d171 set returned exit code %d; output: %s", rc, output.c_str());
         return false;
     }
