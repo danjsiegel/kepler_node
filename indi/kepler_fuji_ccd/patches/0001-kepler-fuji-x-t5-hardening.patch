@@ -410,7 +410,7 @@ index 081d5800..fd1eb450 100644
  
      for (i = 0; i < widget->choice_cnt; i++)
      {
-@@ -829,8 +859,22 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
+@@ -829,8 +859,23 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
              DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "gp_file_new_from_fd failed (%s)", gp_result_as_string(result));
      }
  
