@@ -348,6 +348,38 @@ def test_kepler_fuji_patch_bundle_scales_event_timeout_with_requested_exposure()
     )
 
 
+def test_kepler_fuji_patch_bundle_recovers_aborted_captures_gracefully() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'gphoto->is_aborted = false;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must clear stale abort state before starting the next exposure"
+    )
+    assert 'gphoto->is_aborted = true;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must mark an in-flight capture as aborted before draining late Fuji events"
+    )
+    assert 'if (gphoto->handle_sdcard_image != IGNORE_IMAGE || gphoto->is_aborted)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must still drain and clean up a late FILE_ADDED event after abort"
+    )
+    assert 'return result;' in content and 'int result = gphoto_read_exposure(gphoto);' in content, (
+        "the tracked Kepler Fuji DSLR patchset must propagate the abort-drain result instead of blindly reporting success"
+    )
+
+
+def test_kepler_fuji_patch_bundle_drops_pending_files_on_reconnect() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'static void discard_fuji_pending_file(gphoto_driver *gphoto, const CameraFilePath *path, const char *reason)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must define a reconnect-safe helper that deletes a pending late Fuji file"
+    )
+    assert 'discard_fuji_pending_file(gphoto, &gphoto->camerapath, reason);' in content, (
+        "the tracked Kepler Fuji DSLR patchset must delete the remembered pending Fuji file after session recovery"
+    )
+    assert 'drain_fuji_pending_events(gphoto, reason);' in content, (
+        "the tracked Kepler Fuji DSLR patchset must drain late Fuji FILE_ADDED events after session recovery"
+    )
+    assert 'drain_fuji_pending_events(gphoto, "connect");' in content, (
+        "the tracked Kepler Fuji DSLR patchset must also drain pending late Fuji files during reconnect"
+    )
+
+
 def test_bootstrap_and_upgrade_wipe_and_recreate_starter_rig_indi_profile() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()

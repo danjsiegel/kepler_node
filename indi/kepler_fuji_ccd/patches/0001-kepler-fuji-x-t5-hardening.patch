@@ -340,10 +340,10 @@ index a8ba5998..6d8be21b 100644
  
      char sw_name[MAXINDINAME];
 diff --git a/indi-gphoto/gphoto_driver.cpp b/indi-gphoto/gphoto_driver.cpp
-index 081d5800..fd1eb450 100644
+index 081d5800..d021a23f 100644
 --- a/indi-gphoto/gphoto_driver.cpp
 +++ b/indi-gphoto/gphoto_driver.cpp
-@@ -163,6 +165,7 @@ struct _gphoto_driver
+@@ -163,6 +163,7 @@ struct _gphoto_driver
      bool supports_temperature;
      float last_sensor_temp;
      bool bulb_mode {false};
@@ -351,13 +351,51 @@ index 081d5800..fd1eb450 100644
  
      DSUSBDriver *dsusb;
  
-@@ -186,6 +189,31 @@ enum
+@@ -186,6 +187,73 @@ enum
  static char device[64];
  static int RTS_flag = TIOCM_RTS;
  
 +static bool is_fuji_camera(const gphoto_driver *gphoto)
 +{
 +    return gphoto && gphoto->manufacturer && strcasestr(gphoto->manufacturer, "Fuji") != nullptr;
++}
++
++static void discard_fuji_pending_file(gphoto_driver *gphoto, const CameraFilePath *path, const char *reason)
++{
++    if (!is_fuji_camera(gphoto) || path == nullptr || path->folder[0] == '\0' || path->name[0] == '\0')
++        return;
++
++    int result = gp_camera_file_delete(gphoto->camera, path->folder, path->name, gphoto->context);
++    if (result == GP_OK)
++    {
++        DEBUGFDEVICE(device, INDI::Logger::DBG_SESSION,
++                     "Discarded pending Fuji file after %s: %s/%s", reason, path->folder, path->name);
++    }
++    else if (result != GP_ERROR_FILE_NOT_FOUND)
++    {
++        DEBUGFDEVICE(device, INDI::Logger::DBG_WARNING,
++                     "Failed to discard pending Fuji file after %s: %s/%s (%s)", reason, path->folder, path->name,
++                     gp_result_as_string(result));
++    }
++}
++
++static void drain_fuji_pending_events(gphoto_driver *gphoto, const char *reason)
++{
++    if (!is_fuji_camera(gphoto))
++        return;
++
++    for (int attempt = 0; attempt < 5; ++attempt)
++    {
++        CameraEventType event = GP_EVENT_UNKNOWN;
++        void *data = nullptr;
++        int result = gp_camera_wait_for_event(gphoto->camera, 100, &event, &data, gphoto->context);
++
++        if (result != GP_OK || event == GP_EVENT_TIMEOUT)
++            break;
++
++        if (event == GP_EVENT_FILE_ADDED)
++            discard_fuji_pending_file(gphoto, static_cast<CameraFilePath *>(data), reason);
++    }
 +}
 +
 +static void attempt_fuji_session_recovery(gphoto_driver *gphoto, const char *reason)
@@ -377,13 +415,17 @@ index 081d5800..fd1eb450 100644
 +    if (result != GP_OK)
 +        DEBUGFDEVICE(device, INDI::Logger::DBG_ERROR, "Fuji session recovery failed: %s", gp_result_as_string(result));
 +    else
++    {
++        discard_fuji_pending_file(gphoto, &gphoto->camerapath, reason);
++        drain_fuji_pending_events(gphoto, reason);
 +        DEBUGDEVICE(device, INDI::Logger::DBG_SESSION, "Fuji session recovery succeeded.");
++    }
 +}
 +
  void gphoto_set_debug(const char *name)
  {
      strncpy(device, name, 64);
-@@ -256,7 +284,7 @@ int gphoto_read_widget(gphoto_widget *widget)
+@@ -256,7 +324,7 @@ int gphoto_read_widget(gphoto_widget *widget)
              if (!widget->choices)
              {
                  widget->choice_cnt = gp_widget_count_choices(widget->widget);
@@ -392,7 +434,7 @@ index 081d5800..fd1eb450 100644
              }
  
              for (i = 0; i < widget->choice_cnt; i++)
-@@ -286,7 +314,7 @@ int gphoto_read_widget(gphoto_widget *widget)
+@@ -286,7 +354,7 @@ int gphoto_read_widget(gphoto_widget *widget)
  
  static gphoto_widget *find_widget(gphoto_driver *gphoto, const char *name)
  {
@@ -401,7 +443,7 @@ index 081d5800..fd1eb450 100644
      int ret;
  
      widget->name = lookup_widget(gphoto->config, name, &widget->widget);
-@@ -467,7 +495,7 @@ static double *parse_shutterspeed(gphoto_driver *gphoto, gphoto_widget *widget)
+@@ -467,7 +535,7 @@ static double *parse_shutterspeed(gphoto_driver *gphoto, gphoto_widget *widget)
          gphoto->exposure_presets_count = widget->choice_cnt;
      }
  
@@ -410,9 +452,7 @@ index 081d5800..fd1eb450 100644
  
      for (i = 0; i < widget->choice_cnt; i++)
      {
-@@ -829,8 +859,23 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
-             DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "gp_file_new_from_fd failed (%s)", gp_result_as_string(result));
-     }
+@@ -831,6 +899,21 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
  
      result = gp_camera_file_get(gphoto->camera, fn->folder, fn->name, GP_FILE_TYPE_NORMAL, gphoto->camerafile,
                                  gphoto->context);
@@ -434,7 +474,7 @@ index 081d5800..fd1eb450 100644
  
      //if (!(gphoto->command & DSLR_CMD_ABORT))
      //    DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "Downloading image (%s) in folder (%s)", fn->name, fn->folder);
-@@ -840,6 +889,7 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
+@@ -840,6 +923,7 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
          DEBUGFDEVICE(device, INDI::Logger::DBG_ERROR, "Error downloading image from camera: %s", gp_result_as_string(result));
          gp_file_free(gphoto->camerafile);
          gphoto->camerafile = nullptr;
@@ -442,7 +482,7 @@ index 081d5800..fd1eb450 100644
          return result;
      }
  
-@@ -1102,6 +1152,15 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
+@@ -1102,6 +1186,17 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
      pthread_mutex_lock(&gphoto->mutex);
      DEBUGDEVICE(device, INDI::Logger::DBG_DEBUG, "Mutex locked");
  
@@ -455,10 +495,12 @@ index 081d5800..fd1eb450 100644
 +        gphoto->exposure_event_timeout = static_cast<int>(exposure_wait_seconds);
 +    }
 +
++    gphoto->is_aborted = false;
++
      // Set ISO Settings
      if (gphoto->iso >= 0)
          gphoto_set_widget_num(gphoto, gphoto->iso_widget, gphoto->iso);
-@@ -1145,10 +1204,10 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
+@@ -1145,10 +1240,10 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
      // 2. An external shutter port or DSUSB is active (for > 1 second exposures or there is no optimal exposure)
      //// 3. Exposure Time > 1 second or there is no optimal exposure and we have a bulb widget to trigger the custom time
      // 3. There is no optimal exposure and we have a bulb widget to trigger the custom time
@@ -471,7 +513,7 @@ index 081d5800..fd1eb450 100644
      {
          // Check if we are in BULB or MANUAL or other mode. Always set it to BULB if needed
          if (gphoto->bulb_widget && gphoto->autoexposuremode_widget)
-@@ -1279,9 +1338,15 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
+@@ -1279,9 +1374,15 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
  
      if (optimalExposureIndex == -1)
      {
@@ -490,12 +532,7 @@ index 081d5800..fd1eb450 100644
      }
      else if (gphoto->exposure_widget && gphoto->exposure_widget->type == GP_WIDGET_TEXT)
      {
-@@ -1371,11 +1436,13 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
-             return GP_OK;
-         }
- 
-         result          = download_image(gphoto, &gphoto->camerapath, fd);
-         gphoto->command = 0;
+@@ -1376,6 +1477,8 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
          //Set exposure back to original value
          // JM 2018-08-06: Why do we really need to reset values here?
          //reset_settings(gphoto);
@@ -504,7 +541,7 @@ index 081d5800..fd1eb450 100644
          pthread_mutex_unlock(&gphoto->mutex);
          return result;
      }
-@@ -1385,6 +1454,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1385,6 +1488,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
      gphoto->command    = 0;
      uint32_t waitMS = 1000;
      bool downloadComplete = false;
@@ -512,7 +549,7 @@ index 081d5800..fd1eb450 100644
  
      while (1)
      {
-@@ -1393,10 +1463,11 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1393,10 +1497,11 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
  
          if (result != GP_OK)
          {
@@ -526,7 +563,7 @@ index 081d5800..fd1eb450 100644
                  pthread_mutex_unlock(&gphoto->mutex);
                  return -1;
              }
-@@ -1408,14 +1479,26 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1408,14 +1513,26 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
          {
              case GP_EVENT_CAPTURE_COMPLETE:
                  DEBUGDEVICE(device, INDI::Logger::DBG_DEBUG, "Capture event completed.");
@@ -543,8 +580,9 @@ index 081d5800..fd1eb450 100644
              case GP_EVENT_FILE_ADDED:
                  DEBUGDEVICE(device, INDI::Logger::DBG_DEBUG, "File added event completed.");
                  fn     = static_cast<CameraFilePath *>(data);
-                 if (gphoto->handle_sdcard_image != IGNORE_IMAGE)
+-                if (gphoto->handle_sdcard_image != IGNORE_IMAGE)
 -                    download_image(gphoto, fn, fd);
++                if (gphoto->handle_sdcard_image != IGNORE_IMAGE || gphoto->is_aborted)
 +                {
 +                    result = download_image(gphoto, fn, fd);
 +                    if (result != GP_OK)
@@ -556,7 +594,7 @@ index 081d5800..fd1eb450 100644
                  waitMS = 100;
                  downloadComplete = true;
                  break;
-@@ -1430,8 +1513,9 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1430,8 +1547,9 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
                  }
                  DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "Event timed out #%d, retrying...", ++timeoutCounter);
                  // So retry for 5 seconds before giving up
@@ -567,7 +605,28 @@ index 081d5800..fd1eb450 100644
                      pthread_mutex_unlock(&gphoto->mutex);
                      return -1;
                  }
-@@ -1690,7 +1774,7 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
+@@ -1446,6 +1564,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+ 
+ int gphoto_abort_exposure(gphoto_driver *gphoto)
+ {
++    gphoto->is_aborted = true;
+     gphoto->command = DSLR_CMD_ABORT;
+     pthread_cond_signal(&gphoto->signal);
+     pthread_mutex_unlock(&gphoto->mutex);
+@@ -1459,9 +1578,10 @@ int gphoto_abort_exposure(gphoto_driver *gphoto)
+ 
+     pthread_mutex_unlock(&gphoto->mutex);
+ 
+-    gphoto_read_exposure(gphoto);
++    int result = gphoto_read_exposure(gphoto);
++    gphoto->is_aborted = false;
+ 
+-    return GP_OK;
++    return result;
+ }
+ 
+ int gphoto_read_exposure(gphoto_driver *gphoto)
+@@ -1690,7 +1810,7 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
          }
      }
  
@@ -576,7 +635,7 @@ index 081d5800..fd1eb450 100644
      gphoto->camera                 = camera;
      gphoto->context                = context;
      gphoto->exposure_presets       = nullptr;
-@@ -1818,7 +1902,9 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
+@@ -1818,7 +1938,9 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
      }
  
      if ((gphoto->focus_widget = find_widget(gphoto, "manualfocusdrive")) != nullptr ||
@@ -587,7 +646,16 @@ index 081d5800..fd1eb450 100644
      {
          DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "Focus Widget: %s", gphoto->focus_widget->name);
      }
-@@ -2005,7 +2091,7 @@ static void find_all_widgets(gphoto_driver *gphoto, CameraWidget *widget, char *
+@@ -1847,6 +1969,8 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
+     if (gphoto->manufacturer == nullptr)
+         gphoto->manufacturer = gphoto->model;
+ 
++    drain_fuji_pending_events(gphoto, "connect");
++
+     if (strstr(gphoto->manufacturer, "Canon"))
+         gphoto->supports_temperature = true;
+ 
+@@ -2005,7 +2129,7 @@ static void find_all_widgets(gphoto_driver *gphoto, CameraWidget *widget, char *
              return;
          }
          list                 = (gphoto_widget_list *)calloc(1, sizeof(gphoto_widget_list));
@@ -596,7 +664,7 @@ index 081d5800..fd1eb450 100644
          list->widget->widget = widget;
          list->widget->type   = type;
          list->widget->name   = uselabel;
-@@ -2208,8 +2294,9 @@ int gphoto_start_preview(gphoto_driver *gphoto)
+@@ -2208,8 +2332,9 @@ int gphoto_start_preview(gphoto_driver *gphoto)
  
  int gphoto_stop_preview(gphoto_driver *gphoto)
  {
@@ -608,7 +676,7 @@ index 081d5800..fd1eb450 100644
          return GP_OK;
  
      // If viewfinder not found, nothing to do
-@@ -2249,89 +2336,105 @@ int gphoto_manual_focus(gphoto_driver *gphoto, int speed, char *errMsg)
+@@ -2249,89 +2374,105 @@ int gphoto_manual_focus(gphoto_driver *gphoto, int speed, char *errMsg)
  {
      int rc = 0;
  
@@ -621,15 +689,6 @@ index 081d5800..fd1eb450 100644
 +
 +        rc = gp_widget_set_value(gphoto->focus_widget->widget, delta);
 +        if (rc < GP_OK)
-+        {
-+            snprintf(errMsg, MAXRBUF, "Failed to set Fuji d171 focus delta %s: %s", delta, gp_result_as_string(rc));
-+            return rc;
-+        }
-+    }
-+    else
-+    {
-+
-+        switch (gphoto->focus_widget->type)
          {
 -            // For Canon
 -            // Speed is either
@@ -645,6 +704,15 @@ index 081d5800..fd1eb450 100644
 -            // Mapping target speed to widget choices
 -            uint8_t choice_index = (speed >= 0) ? speed + 3 : (speed * -1) - 1;
 -            if (choice_index > gphoto->focus_widget->choice_cnt)
++            snprintf(errMsg, MAXRBUF, "Failed to set Fuji d171 focus delta %s: %s", delta, gp_result_as_string(rc));
++            return rc;
++        }
++    }
++    else
++    {
++
++        switch (gphoto->focus_widget->type)
++        {
 +            case GP_WIDGET_RADIO:
              {
 -                snprintf(errMsg, MAXRBUF, "Speed %d choice index %d is out of bounds for focus widget count %d",

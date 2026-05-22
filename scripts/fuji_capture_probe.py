@@ -26,6 +26,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import NoReturn
 
 
 DEFAULT_DEVICE = "Kepler Fuji DSLR Fujifilm X-T5"
