@@ -1586,6 +1586,45 @@ def test_confirm_ekos_paused_stays_requested_when_broker_unknown(tmp_path: Path)
     assert ctrl._intervention_window == InterventionWindowState.REQUESTED
 
 
+def test_resume_blocks_when_broker_unavailable(tmp_path: Path) -> None:
+    """resume() must stay PAUSED when the broker state is UNAVAILABLE.
+
+    Regression guard: UNAVAILABLE broker means indiwebmanager is unreachable;
+    handing back the device path to Ekos would be unsafe.  The check at
+    BrokerRuntimeState.UNKNOWN must also cover UNAVAILABLE.
+    """
+    from kepler_node.agent.absolute_state import EkosRuntimeState, NormalizedEkosSnapshot
+    from kepler_node.agent.broker import BrokerRuntimeState, BrokerSnapshot, StubBrokerBackend
+    from kepler_node.agent.session import ClawState, WorkflowIntent
+
+    ekos = MagicMock()
+    ekos.pause.return_value = True
+    ekos.status.return_value = NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.PAUSED)
+
+    class _UnavailableBrokerBackend(StubBrokerBackend):
+        def snapshot(self) -> BrokerSnapshot:
+            return BrokerSnapshot(
+                broker_state=BrokerRuntimeState.UNAVAILABLE,
+                device_path_available=False,
+            )
+
+    ctrl = _make_controller(tmp_path, ekos_adapter=ekos)
+    ctrl.broker = _UnavailableBrokerBackend()
+    ctrl.session.state = ClawState.CAPTURE
+    ctrl.session.pause(
+        pause_reason="test_pause",
+        resume_state=ClawState.CAPTURE,
+        workflow_intent=WorkflowIntent.CAPTURE,
+        operator_action_required="Resolve issue",
+    )
+
+    result = ctrl.resume()
+    assert result.next_state == ClawState.PAUSED, (
+        "resume() must stay PAUSED when broker state is UNAVAILABLE"
+    )
+    assert ctrl.session.state == ClawState.PAUSED
+
+
 def test_resume_blocks_when_broker_unknown(tmp_path: Path) -> None:
     """resume() must stay PAUSED when the canonical broker state is UNKNOWN.
 

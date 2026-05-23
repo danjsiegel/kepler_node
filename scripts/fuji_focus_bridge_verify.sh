@@ -11,7 +11,7 @@
 #   ./scripts/fuji_focus_bridge_verify.sh                   # read-only
 #   ./scripts/fuji_focus_bridge_verify.sh --probe-indi      # also probe active INDI profile
 #   ./scripts/fuji_focus_bridge_verify.sh --allow-move      # emit focus moves (d171)
-#   ./scripts/fuji_focus_bridge_verify.sh --allow-move --probe-indi --artifact-dir /tmp/fuji-verify
+#   ./scripts/fuji_focus_bridge_verify.sh --allow-move --probe-indi --artifact-dir data/verify/fuji-verify
 #
 # Current baseline (XF55-200mmF3.5-4.8 R LM OIS on X-T5):
 #   /main/other/d171  — proven writable; moves the lens; NOT a calibrated linear axis

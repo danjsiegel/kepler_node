@@ -24,7 +24,13 @@ from typing import Annotated, Any
 from fastapi import FastAPI, HTTPException, Query
 
 from kepler_node.agent.claw import ClawController
-from kepler_node.agent.interfaces import ReadinessCondition, TimeSource, TimeStatus
+from kepler_node.agent.interfaces import (
+    PowerStatus,
+    ReadinessCondition,
+    StorageStatus,
+    TimeSource,
+    TimeStatus,
+)
 from kepler_node.agent.node_management import confirm_time_action
 from kepler_node.agent.session import ClawState, RuntimeSession, TerminalOutcome
 from kepler_node.api.models import (
@@ -40,8 +46,10 @@ from kepler_node.api.models import (
     FrameListResponse,
     FrameSummary,
     HealthResponse,
+    InterventionStateResponse,
     NodeStatusResponse,
     OutcomeSummary,
+    PlannerModeResponse,
     ReadinessResponse,
     SessionStateResponse,
     SessionSummaryResponse,
@@ -158,7 +166,10 @@ def _node_host() -> str:
 
 
 def _get_degraded(
-    controller: ClawController, *, time_st: TimeStatus | None = None
+    controller: ClawController,
+    *,
+    time_st: TimeStatus | None = None,
+    camera_diag: dict[str, Any] | None = None,
 ) -> list[BlockerCondition]:
     degraded: list[BlockerCondition] = []
     storage = controller.node.storage_status()
@@ -196,7 +207,8 @@ def _get_degraded(
             )
         )
 
-    camera_diag = _get_camera_diagnostic(controller)
+    if camera_diag is None:
+        camera_diag = _get_camera_diagnostic(controller)
     if camera_diag is not None and camera_diag.get("status") == "disconnected":
         degraded.append(
             BlockerCondition(
@@ -206,6 +218,98 @@ def _get_degraded(
             )
         )
     return degraded
+
+
+def _get_hardware_blockers(
+    *,
+    time_st: TimeStatus,
+    storage_st: StorageStatus,
+    power_st: PowerStatus,
+    camera_diag: dict[str, Any] | None,
+) -> list[BlockerCondition]:
+    blockers: list[BlockerCondition] = []
+
+    if not time_st.trusted:
+        blockers.append(
+            BlockerCondition(
+                name="time_uncertain",
+                severity="blocking",
+                summary="Time is not trusted; cannot start calibration or capture",
+                operator_action_required="Confirm time or wait for NTP synchronization",
+                details={"time_source": time_st.source, "time_summary": time_st.summary},
+            )
+        )
+
+    if "critically" in storage_st.summary or not storage_st.writable:
+        blockers.append(
+            BlockerCondition(
+                name="storage_critically_low",
+                severity="blocking",
+                summary=storage_st.summary,
+                operator_action_required="Free disk space or verify storage mount before continuing",
+                details={"free_bytes": str(storage_st.free_bytes)},
+            )
+        )
+
+    if not power_st.healthy:
+        blockers.append(
+            BlockerCondition(
+                name="power_integrity_warning",
+                severity="blocking",
+                summary=power_st.summary,
+                operator_action_required="Check power supply and USB connections",
+                details={"undervoltage": str(power_st.undervoltage_detected)},
+            )
+        )
+
+    if camera_diag is None:
+        return blockers
+
+    camera_status = camera_diag.get("status")
+    if camera_status == "diagnostic_failed":
+        blockers.append(
+            BlockerCondition(
+                name="camera_diagnostic_failed",
+                severity="blocking",
+                summary=camera_diag.get("summary", "Camera diagnostic probe failed"),
+                operator_action_required="Check camera USB connection and retry",
+            )
+        )
+    elif camera_status in {"card_reader_mode", "detected_unknown_mode"}:
+        blockers.append(
+            BlockerCondition(
+                name="camera_remote_mode_required",
+                severity="blocking",
+                summary=camera_diag.get(
+                    "summary",
+                    "Camera is not in a supported USB remote-control mode",
+                ),
+                operator_action_required="Switch camera to USB tether/remote-control mode and retry",
+                details={"camera_status": str(camera_status)},
+            )
+        )
+    elif camera_status == "autocapture_mode":
+        blockers.append(
+            BlockerCondition(
+                name="camera_autocapture_mode_blocking",
+                severity="blocking",
+                summary=camera_diag.get(
+                    "summary",
+                    "Camera is in a blocked self-timer/autocapture mode",
+                ),
+                operator_action_required=(
+                    camera_diag.get("operator_hint")
+                    or "Exit self-timer/autocapture mode on the camera body and retry"
+                ),
+                details={
+                    "camera_status": str(camera_status),
+                    "capture_mode": str(camera_diag.get("capture_mode")),
+                    "capture_delay": str(camera_diag.get("capture_delay")),
+                },
+            )
+        )
+
+    return blockers
 
 
 def _get_session_blockers(session: RuntimeSession) -> list[BlockerCondition]:
@@ -564,11 +668,17 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
     @app.get("/api/v1/readiness", response_model=ReadinessResponse)
     def get_readiness() -> ReadinessResponse:
         """Readiness status for calibration and session start."""
-        hw_blockers = controller.check_readiness()
         session = controller.session
         time_status = controller.node.time_status()
         storage_status = controller.node.storage_status()
         power_status = controller.node.power_status()
+        camera_diag = _get_camera_diagnostic(controller)
+        hw_blockers = _get_hardware_blockers(
+            time_st=time_status,
+            storage_st=storage_status,
+            power_st=power_status,
+            camera_diag=camera_diag,
+        )
 
         session_blockers = _get_session_blockers(session)
         external_control_summary: dict | None = None
@@ -584,12 +694,24 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
             }
 
         all_blockers = [_to_blocker(b) for b in hw_blockers] + session_blockers
+
+        # supervision_ready must mirror the attach gate: no generic blockers,
+        # READY state, active profile, AND Ekos/broker reachable.
+        supervision_blockers = (
+            controller.get_supervision_blockers() if session.state == ClawState.READY else []
+        )
+        supervision_ready = (
+            len(all_blockers) == 0
+            and session.state == ClawState.READY
+            and controller.active_equipment_profile is not None
+            and len(supervision_blockers) == 0
+        )
         return ReadinessResponse(
             ready=len(all_blockers) == 0,
             calibrated=session.calibration_accepted,
             time_trusted=time_status.trusted,
             blockers=all_blockers,
-            degraded=_get_degraded(controller, time_st=time_status),
+            degraded=_get_degraded(controller, time_st=time_status, camera_diag=camera_diag),
             storage_summary={
                 "free_bytes": storage_status.free_bytes,
                 "total_bytes": storage_status.total_bytes,
@@ -601,6 +723,8 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
                 "summary": power_status.summary,
             },
             external_control_summary=external_control_summary,
+            supervision_ready=supervision_ready,
+            supervision_blockers=[_to_blocker(b) for b in supervision_blockers],
         )
 
     # ------------------------------------------------------------------ #
@@ -706,6 +830,27 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
                 "operator_action_required": session.resume_context.operator_action_required,
             }
 
+        # Supervisory fields (v1.1)
+        intervention_summary: dict[str, Any] | None = None
+        if session.intervention_ledger is not None:
+            ledger = session.intervention_ledger
+            active = ledger.active_record
+            intervention_summary = {
+                "active_kind": ledger.active_kind,
+                "total_records": len(ledger.records),
+                "active_record": {
+                    "kind": active.kind,
+                    "reason": active.reason,
+                    "retry_count": active.retry_count,
+                } if active else None,
+            }
+
+        try:
+            canonical = controller.canonical_state()
+            active_owner: str | None = canonical.active_owner.value if canonical.active_owner else None
+        except Exception:
+            active_owner = None
+
         return SessionStateResponse(
             session_id=session.session_id,
             state=session.state,
@@ -715,6 +860,9 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
             blockers=[_to_blocker(b) for b in blockers],
             degraded=_get_degraded(controller),
             pause_summary=pause,
+            supervisory_next_action=session.supervisory_next_action,
+            active_owner=active_owner,
+            intervention_summary=intervention_summary,
         )
 
     # ------------------------------------------------------------------ #
@@ -839,8 +987,86 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
         return _action_resp(controller, result.message)
 
     # ------------------------------------------------------------------ #
-    # GET /api/v1/session/current/frames                                   #
+    # GET /api/v1/planner-mode                                             #
     # ------------------------------------------------------------------ #
+
+    @app.get("/api/v1/planner-mode", response_model=PlannerModeResponse)
+    def get_planner_mode() -> PlannerModeResponse:
+        """Return the active planner mode from the install manifest."""
+        planner_mode: str | None = None
+        try:
+            manifest = controller.store.read_install_manifest()
+            if manifest is not None:
+                planner_mode = manifest.bootstrap_profile
+        except Exception:
+            pass
+        return PlannerModeResponse(planner_mode=planner_mode)
+
+    # ------------------------------------------------------------------ #
+    # POST /api/v1/session/attach                                          #
+    # ------------------------------------------------------------------ #
+
+    @app.post("/api/v1/session/attach", response_model=ActionResponse)
+    def post_session_attach() -> ActionResponse:
+        """Attach supervision to an Ekos-managed session. READY → EKOS_WAIT.
+
+        409 when not in ready state or a session is already active.
+        422 when readiness blockers, missing equipment profile, or Ekos/broker
+        unavailability prevent the attach.
+        """
+        session = controller.session
+        if session.state != ClawState.READY:
+            raise HTTPException(
+                status_code=409,
+                detail=f"attach is only valid from ready state (current: {session.state})",
+            )
+        try:
+            result = controller.attach_session()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _action_resp(controller, result.message)
+
+    # ------------------------------------------------------------------ #
+    # GET /api/v1/session/current/intervention                             #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/api/v1/session/current/intervention", response_model=InterventionStateResponse | None)
+    def get_session_intervention() -> InterventionStateResponse | None:
+        """Return the current intervention state for a supervised session.
+
+        Returns null when no session is active or the session is not supervised.
+        """
+
+        session = controller.session
+        if session.intervention_ledger is None:
+            return None
+
+        ledger = session.intervention_ledger
+        active = ledger.active_record
+        recent_records = [
+            {
+                "kind": r.kind,
+                "reason": r.reason,
+                "requested_at": r.requested_at.isoformat(),
+                "outcome": r.outcome,
+                "retry_count": r.retry_count,
+                "acknowledged": r.acknowledged,
+            }
+            for r in ledger.records[-10:]
+        ]
+        iw = controller._intervention_window
+        return InterventionStateResponse(
+            active_kind=active.kind if active else None,
+            active_reason=active.reason if active else None,
+            active_since=active.requested_at if active else None,
+            retry_count=active.retry_count if active else 0,
+            recent_records=recent_records,
+            intervention_window=iw.value if hasattr(iw, "value") else str(iw),
+        )
+
+
 
     @app.get("/api/v1/session/current/frames", response_model=FrameListResponse)
     def get_session_frames(

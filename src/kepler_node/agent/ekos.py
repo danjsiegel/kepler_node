@@ -124,12 +124,17 @@ class StubEkosAdapter:
     no events.
     """
 
+    def __init__(self) -> None:
+        self._ekos_state = EkosRuntimeState.IDLE
+
     def pause(self) -> bool:
         _logger.info("StubEkosAdapter.pause() called")
+        self._ekos_state = EkosRuntimeState.PAUSED
         return True
 
     def resume(self) -> bool:
         _logger.info("StubEkosAdapter.resume() called")
+        self._ekos_state = EkosRuntimeState.RUNNING
         return True
 
     def request_autofocus(self) -> bool:
@@ -141,7 +146,7 @@ class StubEkosAdapter:
         return True
 
     def status(self) -> NormalizedEkosSnapshot:
-        return NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.IDLE)
+        return NormalizedEkosSnapshot(ekos_state=self._ekos_state)
 
     def observe(self) -> list[DeviceActivityEvent]:
         return []

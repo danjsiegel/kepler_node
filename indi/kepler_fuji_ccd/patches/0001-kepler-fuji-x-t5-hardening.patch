@@ -1,5 +1,5 @@
 diff --git a/indi-gphoto/CMakeLists.txt b/indi-gphoto/CMakeLists.txt
-index 10434155..70b6bc80 100644
+index 104341550db12746f2dcc112f1883b3e043962b7..70b6bc8064301bb63eaf86a090ef52f9f9d43368 100644
 --- a/indi-gphoto/CMakeLists.txt
 +++ b/indi-gphoto/CMakeLists.txt
 @@ -8,6 +8,8 @@ LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules/")
@@ -84,10 +84,18 @@ index 10434155..70b6bc80 100644
  # Disable automount for DSLR cameras
  IF (UNIX AND NOT APPLE)
 diff --git a/indi-gphoto/gphoto_ccd.cpp b/indi-gphoto/gphoto_ccd.cpp
-index a8ba5998..6d8be21b 100644
+index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a37cca313 100644
 --- a/indi-gphoto/gphoto_ccd.cpp
 +++ b/indi-gphoto/gphoto_ccd.cpp
-@@ -44,6 +44,11 @@
+@@ -27,6 +27,7 @@
+ #include "gphoto_readimage.h"
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <stream/streammanager.h>
+ 
+ #include <deque>
+@@ -44,6 +45,11 @@
  
  extern char * __progname;
  
@@ -99,7 +107,7 @@ index a8ba5998..6d8be21b 100644
  
  typedef struct
  {
-@@ -58,6 +63,7 @@ static CamDriverInfo camInfos[] = { { "indi_gphoto_ccd", "GPhoto CCD", "GPhoto"
+@@ -58,6 +64,7 @@ static CamDriverInfo camInfos[] = { { "indi_gphoto_ccd", "GPhoto CCD", "GPhoto"
      { "indi_pentax_ccd", "Pentax DSLR", "Pentax" },
      { "indi_sony_ccd", "Sony DSLR", "Sony" },
      { "indi_fuji_ccd", "Fuji DSLR", "Fuji" },
@@ -107,7 +115,7 @@ index a8ba5998..6d8be21b 100644
      { nullptr, nullptr, nullptr }
  };
  
-@@ -128,7 +134,24 @@ static class Loader
+@@ -128,7 +135,24 @@ static class Loader
                      char name[MAXINDINAME];
                      bool modelFound = false;
  
@@ -133,7 +141,7 @@ index a8ba5998..6d8be21b 100644
                      {
                          if (strstr(model, camInfos[j].model))
                          {
-@@ -226,6 +249,9 @@ GPhotoCCD::~GPhotoCCD()
+@@ -226,6 +250,9 @@ GPhotoCCD::~GPhotoCCD()
  
  const char * GPhotoCCD::getDefaultName()
  {
@@ -143,7 +151,7 @@ index a8ba5998..6d8be21b 100644
      return "GPhoto CCD";
  }
  
-@@ -268,20 +294,21 @@ bool GPhotoCCD::initProperties()
+@@ -268,20 +295,21 @@ bool GPhotoCCD::initProperties()
  
      // Nikon should use SD card by default
      const bool isNikon = strstr(getDeviceName(), "Nikon");
@@ -169,7 +177,33 @@ index a8ba5998..6d8be21b 100644
      IUFillSwitchVector(&forceBULBSP, forceBULBS, 2, getDeviceName(), "CCD_FORCE_BLOB", "Force BULB",
                         OPTIONS_TAB, IP_RW, ISR_1OFMANY, 0, IPS_IDLE);
  
-@@ -340,10 +367,13 @@ void GPhotoCCD::ISGetProperties(const char * dev)
+@@ -311,7 +339,24 @@ bool GPhotoCCD::initProperties()
+     FocusSpeedN[0].value = 3;
+ #endif
+ 
+-    FI::SetCapability(FOCUSER_CAN_REL_MOVE);
++    if (useKeplerFujiDefaults)
++    {
++        FI::SetCapability(FOCUSER_CAN_ABS_MOVE | FOCUSER_CAN_REL_MOVE);
++        FocusAbsPosN[0].min   = 0;
++        FocusAbsPosN[0].max   = 65535;
++        FocusAbsPosN[0].step  = 1;
++        FocusAbsPosN[0].value = 32768;
++        FocusRelPosN[0].min   = 1;
++        FocusRelPosN[0].max   = 32768;
++        FocusRelPosN[0].step  = 1;
++        FocusRelPosN[0].value = 100;
++        FocusMaxPosN[0].min   = 1;
++        FocusMaxPosN[0].max   = 65535;
++        FocusMaxPosN[0].step  = 1;
++        FocusMaxPosN[0].value = 65535;
++    }
++    else
++        FI::SetCapability(FOCUSER_CAN_REL_MOVE);
+ 
+     /* JM 2014-05-20 Make PrimaryCCD.ImagePixelSizeNP writable since we can't know for now the pixel size and bit depth from gphoto */
+     PrimaryCCD.getCCDInfo()->p = IP_RW;
+@@ -340,10 +385,13 @@ void GPhotoCCD::ISGetProperties(const char * dev)
          return;
  
      // Read Image Info if we have not connected yet.
@@ -184,7 +218,7 @@ index a8ba5998..6d8be21b 100644
  
      INumberVectorProperty *nvp = PrimaryCCD.getCCDInfo();
  
-@@ -353,12 +383,32 @@ void GPhotoCCD::ISGetProperties(const char * dev)
+@@ -353,12 +401,32 @@ void GPhotoCCD::ISGetProperties(const char * dev)
      // Load the necessary pixel size information
      // The maximum resolution and bits per pixel depend on the capture itself.
      // while the pixel size data remains constant.
@@ -217,7 +251,7 @@ index a8ba5998..6d8be21b 100644
  
  }
  
-@@ -942,6 +992,31 @@ bool GPhotoCCD::Connect()
+@@ -942,11 +1010,39 @@ bool GPhotoCCD::Connect()
          captureTargetSP.s                      = IPS_OK;
      }
  
@@ -249,7 +283,25 @@ index a8ba5998..6d8be21b 100644
      if (isSimulation())
          m_CanFocus = false;
      else
-@@ -973,6 +1048,80 @@ bool GPhotoCCD::Disconnect()
+         m_CanFocus = gphoto_can_focus(gphotodrv);
+ 
++    if (m_CanFocus && is_kepler_fuji_driver())
++        refreshFujiFocusState();
++
+     LOGF_INFO("%s is online.", getDeviceName());
+ 
+     if (!isSimulation() && gphoto_get_manufacturer(gphotodrv) && gphoto_get_model(gphotodrv))
+@@ -967,12 +1063,85 @@ bool GPhotoCCD::Disconnect()
+     gphoto_close(gphotodrv);
+     gphotodrv        = nullptr;
+     frameInitialized = false;
++    m_HaveFujiFocusState = false;
++    m_FujiFocusRawCurrent = 0;
++    m_FujiFocusMinRaw = 0;
++    m_FujiFocusMaxRaw = 0;
+     LOGF_INFO("%s is offline.", getDeviceName());
+     return true;
+ }
  
  bool GPhotoCCD::StartExposure(float duration)
  {
@@ -292,11 +344,6 @@ index a8ba5998..6d8be21b 100644
 +                                    if (activeDelayChoice)
 +                                    {
 +                                        LOGF_INFO("Fuji capture delay at exposure start: %s", activeDelayChoice);
-+                                        // Treat the delay as "armed" only when its
-+                                        // leading numeric value is non-zero and the label
-+                                        // is not an explicit off/none keyword.  This handles
-+                                        // gphoto2 labels like "0.000s", "2.000s", "10.000s",
-+                                        // "0s", "none", "off", etc.
 +                                        char *numEnd = nullptr;
 +                                        float delaySecs = strtof(activeDelayChoice, &numEnd);
 +                                        bool parsedZero = numEnd > activeDelayChoice && delaySecs == 0.0f;
@@ -330,7 +377,7 @@ index a8ba5998..6d8be21b 100644
      if (PrimaryCCD.getPixelSizeX() == 0.0)
      {
          LOG_INFO("Please update the CCD Information in the Image Info section before "
-@@ -1473,7 +1622,7 @@ bool GPhotoCCD::grabImage()
+@@ -1473,7 +1642,7 @@ bool GPhotoCCD::grabImage()
  ISwitch * GPhotoCCD::create_switch(const char * basestr, char ** options, int max_opts, int setidx)
  {
      int i;
@@ -339,8 +386,182 @@ index a8ba5998..6d8be21b 100644
      ISwitch * one_sw = sw;
  
      char sw_name[MAXINDINAME];
+@@ -1710,8 +1879,139 @@ bool GPhotoCCD::SetFocuserSpeed(int speed)
+ }
+ #endif
+ 
++bool GPhotoCCD::refreshFujiFocusState()
++{
++    if (!is_kepler_fuji_driver() || gphotodrv == nullptr)
++        return false;
++
++    int rawPosition = 0;
++    char errMsg[MAXRBUF] = {0};
++    if (gphoto_read_focus_position(gphotodrv, &rawPosition, errMsg) != GP_OK)
++    {
++        LOGF_ERROR("Failed to read Fuji d171 focus position: %s", errMsg);
++        return false;
++    }
++
++    m_FujiFocusRawCurrent = rawPosition;
++    if (!m_HaveFujiFocusState)
++    {
++        m_FujiFocusMinRaw = rawPosition;
++        m_FujiFocusMaxRaw = rawPosition;
++    }
++    else
++    {
++        m_FujiFocusMinRaw = std::min(m_FujiFocusMinRaw, rawPosition);
++        m_FujiFocusMaxRaw = std::max(m_FujiFocusMaxRaw, rawPosition);
++    }
++
++    m_HaveFujiFocusState = true;
++    FocusAbsPosN[0].value = fujiRawToAbsoluteTicks(rawPosition);
++    return true;
++}
++
++uint32_t GPhotoCCD::fujiRawToAbsoluteTicks(int32_t rawTicks) const
++{
++    const int32_t biasedTicks = rawTicks + FUJI_D171_ABS_BIAS;
++    if (biasedTicks < 0)
++        return 0;
++    if (biasedTicks > static_cast<int32_t>(FUJI_D171_ABS_MAX))
++        return FUJI_D171_ABS_MAX;
++    return static_cast<uint32_t>(biasedTicks);
++}
++
++int32_t GPhotoCCD::fujiAbsoluteToRawTicks(uint32_t absoluteTicks) const
++{
++    if (absoluteTicks > FUJI_D171_ABS_MAX)
++        absoluteTicks = FUJI_D171_ABS_MAX;
++    return static_cast<int32_t>(absoluteTicks) - FUJI_D171_ABS_BIAS;
++}
++
++IPState GPhotoCCD::MoveAbsFocuser(uint32_t targetTicks)
++{
++    if (!is_kepler_fuji_driver() || !m_CanFocus || isSimulation())
++        return IPS_ALERT;
++
++    const int FUJI_D171_SETTLE_POLL_US = 200000;
++    const int FUJI_D171_SETTLE_MAX_POLLS = 25;
++    const int FUJI_D171_SETTLE_TOLERANCE = 1;
++    const int FUJI_D171_SUCCESS_TOLERANCE = 8;
++    const int32_t targetRaw = fujiAbsoluteToRawTicks(targetTicks);
++    char errMsg[MAXRBUF] = {0};
++    if (gphoto_manual_focus(gphotodrv, targetRaw, errMsg) != GP_OK)
++    {
++        LOGF_ERROR("Fuji absolute focus move failed: %s", errMsg);
++        return IPS_ALERT;
++    }
++
++    int stableReads = 0;
++    int32_t settleA = 0;
++    int32_t settleB = 0;
++    int32_t settleC = 0;
++    for (int poll = 0; poll < FUJI_D171_SETTLE_MAX_POLLS; ++poll)
++    {
++        if (!refreshFujiFocusState())
++            return IPS_ALERT;
++
++        settleA = settleB;
++        settleB = settleC;
++        settleC = m_FujiFocusRawCurrent;
++
++        if (poll == 0)
++            stableReads = 1;
++        else if (std::abs(settleC - settleB) <= FUJI_D171_SETTLE_TOLERANCE)
++            ++stableReads;
++        else
++            stableReads = 1;
++
++        if (stableReads >= 3)
++            break;
++
++        usleep(FUJI_D171_SETTLE_POLL_US);
++    }
++
++    if (stableReads < 3)
++    {
++        LOGF_ERROR("Fuji d171 failed to settle after %d polls", FUJI_D171_SETTLE_MAX_POLLS);
++        return IPS_ALERT;
++    }
++
++    const int32_t settledLow = std::min(settleA, std::min(settleB, settleC));
++    const int32_t settledHigh = std::max(settleA, std::max(settleB, settleC));
++    const int32_t settledMedian = settleA + settleB + settleC - settledLow - settledHigh;
++    m_FujiFocusRawCurrent = settledMedian;
++    FocusAbsPosN[0].value = fujiRawToAbsoluteTicks(settledMedian);
++
++    if (std::abs(settledMedian - targetRaw) > FUJI_D171_SUCCESS_TOLERANCE)
++    {
++        LOGF_ERROR("Fuji d171 settled at raw %d outside tolerance band from requested raw %d", settledMedian, targetRaw);
++        return IPS_ALERT;
++    }
++
++    FocusAbsPosNP.s = IPS_OK;
++    IDSetNumber(&FocusAbsPosNP, nullptr);
++    LOGF_DEBUG("Fuji d171 requested raw %d, settled at raw %d", targetRaw, m_FujiFocusRawCurrent);
++    return IPS_OK;
++}
++
+ IPState GPhotoCCD::MoveRelFocuser(FocusDirection dir, uint32_t ticks)
+ {
++    if (is_kepler_fuji_driver())
++    {
++        if (m_HaveFujiFocusState == false && refreshFujiFocusState() == false)
++            return IPS_ALERT;
++
++        int32_t requestedRaw = m_FujiFocusRawCurrent;
++        if (dir == FOCUS_INWARD)
++            requestedRaw -= static_cast<int32_t>(ticks);
++        else
++            requestedRaw += static_cast<int32_t>(ticks);
++
++        IPState state = MoveAbsFocuser(fujiRawToAbsoluteTicks(requestedRaw));
++        FocusRelPosNP.s = state;
++        IDSetNumber(&FocusRelPosNP, nullptr);
++        return state;
++    }
++
+     INDI_UNUSED(dir);
+ 
+     // Reduce by a factor of 10
+diff --git a/indi-gphoto/gphoto_ccd.h b/indi-gphoto/gphoto_ccd.h
+index 2fc2c97dd3c28bac066bdd915ab0b1f9712f52eb..5da91f482fbc4306e93ca7ce3a86a347bbd37664 100644
+--- a/indi-gphoto/gphoto_ccd.h
++++ b/indi-gphoto/gphoto_ccd.h
+@@ -124,6 +124,7 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
+          * Return IPS_ALERT if there is an error.
+          */
+         virtual IPState MoveRelFocuser(FocusDirection dir, uint32_t ticks) override;
++        virtual IPState MoveAbsFocuser(uint32_t targetTicks) override;
+ 
+         // Streaming
+         bool StartStreaming() override;
+@@ -168,7 +169,21 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
+ 
+         // Focus
+         bool m_CanFocus { false };
++        bool refreshFujiFocusState();
++        uint32_t fujiRawToAbsoluteTicks(int32_t rawTicks) const;
++        int32_t fujiAbsoluteToRawTicks(uint32_t absoluteTicks) const;
++        static constexpr int32_t FUJI_D171_ABS_BIAS = 32768;
++        static constexpr uint32_t FUJI_D171_ABS_MAX = 65535;
++        static constexpr int32_t FUJI_D171_SUCCESS_TOLERANCE = 8;
++        static constexpr int32_t FUJI_D171_SETTLE_TOLERANCE = 1;
++        static constexpr uint32_t FUJI_D171_SETTLE_POLL_MS = 200;
++        static constexpr uint32_t FUJI_D171_SETTLE_TIMEOUT_MS = 5000;
++        static constexpr int32_t FUJI_D171_JUMP_RESET_THRESHOLD = 256;
+         int32_t m_TargetLargeStep {0}, m_TargetMedStep {0}, m_TargetLowStep {0}, m_FocusTimerID {-1};
++        bool m_HaveFujiFocusState { false };
++        int32_t m_FujiFocusRawCurrent { 0 };
++        int32_t m_FujiFocusMinRaw { 0 };
++        int32_t m_FujiFocusMaxRaw { 0 };
+ 
+         int liveVideoWidth  {-1};
+         int liveVideoHeight {-1};
 diff --git a/indi-gphoto/gphoto_driver.cpp b/indi-gphoto/gphoto_driver.cpp
-index 081d5800..d021a23f 100644
+index 081d58001a366787b00e2192782f76d8bb8e0cca..c339d0e3ec79990517adc9d6f7eccd83c3770666 100644
 --- a/indi-gphoto/gphoto_driver.cpp
 +++ b/indi-gphoto/gphoto_driver.cpp
 @@ -163,6 +163,7 @@ struct _gphoto_driver
@@ -452,18 +673,15 @@ index 081d5800..d021a23f 100644
  
      for (i = 0; i < widget->choice_cnt; i++)
      {
-@@ -831,6 +899,21 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
- 
+@@ -832,6 +900,33 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
      result = gp_camera_file_get(gphoto->camera, fn->folder, fn->name, GP_FILE_TYPE_NORMAL, gphoto->camerafile,
                                  gphoto->context);
-+    // Fuji X-T5 fix: retry if ObjectNotFound (-108).
-+    // The camera fires ObjectAdded before the RAW is fully written to SD card.
-+    // GetObject returns PTP ObjectNotFound (~2-10 s after capture); retry with delay.
+ 
 +    if (result == GP_ERROR_FILE_NOT_FOUND && is_fuji_camera(gphoto))
 +    {
 +        const int FUJI_MAX_RETRIES      = 10;
 +        const int FUJI_SLICES_PER_RETRY = 20;
-+        const int FUJI_SLICE_US         = 100000; // 20 x 100 ms = 2 s per retry
++        const int FUJI_SLICE_US         = 100000;
 +        for (int retry = 0; retry < FUJI_MAX_RETRIES && result == GP_ERROR_FILE_NOT_FOUND; retry++)
 +        {
 +            for (int slice = 0; slice < FUJI_SLICES_PER_RETRY; slice++)
@@ -485,10 +703,11 @@ index 081d5800..d021a23f 100644
 +                                        gphoto->context);
 +        }
 +    }
- 
++
      //if (!(gphoto->command & DSLR_CMD_ABORT))
      //    DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "Downloading image (%s) in folder (%s)", fn->name, fn->folder);
-@@ -840,6 +923,7 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
+ 
+@@ -840,6 +935,7 @@ static int download_image(gphoto_driver *gphoto, CameraFilePath *fn, int fd)
          DEBUGFDEVICE(device, INDI::Logger::DBG_ERROR, "Error downloading image from camera: %s", gp_result_as_string(result));
          gp_file_free(gphoto->camerafile);
          gphoto->camerafile = nullptr;
@@ -496,14 +715,11 @@ index 081d5800..d021a23f 100644
          return result;
      }
  
-@@ -1102,6 +1186,17 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
+@@ -1102,6 +1198,16 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
      pthread_mutex_lock(&gphoto->mutex);
      DEBUGDEVICE(device, INDI::Logger::DBG_DEBUG, "Mutex locked");
  
-     gphoto->is_aborted = false;
-     pthread_mutex_lock(&gphoto->mutex);
-     gphoto->is_aborted = false;
-     pthread_mutex_unlock(&gphoto->mutex);
++    gphoto->is_aborted = false;
 +    gphoto->exposure_event_timeout = 10;
 +    if (is_fuji_camera(gphoto))
 +    {
@@ -513,17 +729,15 @@ index 081d5800..d021a23f 100644
 +        gphoto->exposure_event_timeout = static_cast<int>(exposure_wait_seconds);
 +    }
 +
-+    gphoto->is_aborted = false;
-+
      // Set ISO Settings
      if (gphoto->iso >= 0)
          gphoto_set_widget_num(gphoto, gphoto->iso_widget, gphoto->iso);
-@@ -1145,10 +1240,10 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
+@@ -1145,10 +1251,10 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
      // 2. An external shutter port or DSUSB is active (for > 1 second exposures or there is no optimal exposure)
      //// 3. Exposure Time > 1 second or there is no optimal exposure and we have a bulb widget to trigger the custom time
      // 3. There is no optimal exposure and we have a bulb widget to trigger the custom time
 -    if (gphoto->exposureList == nullptr ||
-+    if ((gphoto->exposureList == nullptr && !is_fuji_camera(gphoto)) ||
++        if ((gphoto->exposureList == nullptr && !is_fuji_camera(gphoto)) ||
              ( (gphoto->bulb_port[0] || gphoto->dsusb) &&  optimalExposureIndex == -1) ||
              //(gphoto->bulb_widget != nullptr && (exptime_usec > 1e6 || optimalExposureIndex == -1)))
 -            (gphoto->bulb_widget != nullptr && optimalExposureIndex == -1))
@@ -531,7 +745,7 @@ index 081d5800..d021a23f 100644
      {
          // Check if we are in BULB or MANUAL or other mode. Always set it to BULB if needed
          if (gphoto->bulb_widget && gphoto->autoexposuremode_widget)
-@@ -1279,9 +1374,15 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
+@@ -1279,9 +1385,15 @@ int gphoto_start_exposure(gphoto_driver *gphoto, uint32_t exptime_usec, int mirr
  
      if (optimalExposureIndex == -1)
      {
@@ -544,13 +758,13 @@ index 081d5800..d021a23f 100644
 +            pthread_mutex_unlock(&gphoto->mutex);
 +            return -1;
 +        }
-+        // Fuji: dial controls shutter speed; proceed with capture at dial-set speed.
++
 +        DEBUGDEVICE(device, INDI::Logger::DBG_SESSION,
 +                    "Fuji: no PTP shutter speed match; capturing at dial-set speed.");
      }
      else if (gphoto->exposure_widget && gphoto->exposure_widget->type == GP_WIDGET_TEXT)
      {
-@@ -1376,6 +1477,8 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1376,6 +1488,8 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
          //Set exposure back to original value
          // JM 2018-08-06: Why do we really need to reset values here?
          //reset_settings(gphoto);
@@ -559,7 +773,7 @@ index 081d5800..d021a23f 100644
          pthread_mutex_unlock(&gphoto->mutex);
          return result;
      }
-@@ -1385,6 +1488,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1385,6 +1499,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
      gphoto->command    = 0;
      uint32_t waitMS = 1000;
      bool downloadComplete = false;
@@ -567,7 +781,7 @@ index 081d5800..d021a23f 100644
  
      while (1)
      {
-@@ -1393,10 +1497,11 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1393,10 +1508,11 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
  
          if (result != GP_OK)
          {
@@ -581,7 +795,7 @@ index 081d5800..d021a23f 100644
                  pthread_mutex_unlock(&gphoto->mutex);
                  return -1;
              }
-@@ -1408,14 +1513,26 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1408,14 +1524,25 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
          {
              case GP_EVENT_CAPTURE_COMPLETE:
                  DEBUGDEVICE(device, INDI::Logger::DBG_DEBUG, "Capture event completed.");
@@ -592,7 +806,6 @@ index 081d5800..d021a23f 100644
 +                    pthread_mutex_unlock(&gphoto->mutex);
 +                    return GP_OK;
 +                }
-+                // For Fuji SD-card captures, FILE_ADDED follows CAPTURE_COMPLETE.
 +                break;
  
              case GP_EVENT_FILE_ADDED:
@@ -612,7 +825,7 @@ index 081d5800..d021a23f 100644
                  waitMS = 100;
                  downloadComplete = true;
                  break;
-@@ -1430,8 +1547,9 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1430,8 +1557,9 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
                  }
                  DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "Event timed out #%d, retrying...", ++timeoutCounter);
                  // So retry for 5 seconds before giving up
@@ -623,7 +836,7 @@ index 081d5800..d021a23f 100644
                      pthread_mutex_unlock(&gphoto->mutex);
                      return -1;
                  }
-@@ -1446,6 +1564,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
+@@ -1446,6 +1574,7 @@ int gphoto_read_exposure_fd(gphoto_driver *gphoto, int fd)
  
  int gphoto_abort_exposure(gphoto_driver *gphoto)
  {
@@ -631,7 +844,7 @@ index 081d5800..d021a23f 100644
      gphoto->command = DSLR_CMD_ABORT;
      pthread_cond_signal(&gphoto->signal);
      pthread_mutex_unlock(&gphoto->mutex);
-@@ -1459,9 +1578,10 @@ int gphoto_abort_exposure(gphoto_driver *gphoto)
+@@ -1459,9 +1588,12 @@ int gphoto_abort_exposure(gphoto_driver *gphoto)
  
      pthread_mutex_unlock(&gphoto->mutex);
  
@@ -646,7 +859,7 @@ index 081d5800..d021a23f 100644
  }
  
  int gphoto_read_exposure(gphoto_driver *gphoto)
-@@ -1690,7 +1810,7 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
+@@ -1690,7 +1822,7 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
          }
      }
  
@@ -655,7 +868,7 @@ index 081d5800..d021a23f 100644
      gphoto->camera                 = camera;
      gphoto->context                = context;
      gphoto->exposure_presets       = nullptr;
-@@ -1818,7 +1938,9 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
+@@ -1818,7 +1950,9 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
      }
  
      if ((gphoto->focus_widget = find_widget(gphoto, "manualfocusdrive")) != nullptr ||
@@ -666,7 +879,7 @@ index 081d5800..d021a23f 100644
      {
          DEBUGFDEVICE(device, INDI::Logger::DBG_DEBUG, "Focus Widget: %s", gphoto->focus_widget->name);
      }
-@@ -1847,6 +1969,8 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
+@@ -1847,6 +1981,8 @@ gphoto_driver *gphoto_open(Camera *camera, GPContext *context, const char *model
      if (gphoto->manufacturer == nullptr)
          gphoto->manufacturer = gphoto->model;
  
@@ -675,7 +888,7 @@ index 081d5800..d021a23f 100644
      if (strstr(gphoto->manufacturer, "Canon"))
          gphoto->supports_temperature = true;
  
-@@ -2005,7 +2129,7 @@ static void find_all_widgets(gphoto_driver *gphoto, CameraWidget *widget, char *
+@@ -2005,7 +2141,7 @@ static void find_all_widgets(gphoto_driver *gphoto, CameraWidget *widget, char *
              return;
          }
          list                 = (gphoto_widget_list *)calloc(1, sizeof(gphoto_widget_list));
@@ -684,7 +897,90 @@ index 081d5800..d021a23f 100644
          list->widget->widget = widget;
          list->widget->type   = type;
          list->widget->name   = uselabel;
-@@ -2208,8 +2332,9 @@ int gphoto_start_preview(gphoto_driver *gphoto)
+@@ -2179,6 +2315,82 @@ out:
+     return ret;
+ }
+ 
++int gphoto_read_focus_position(gphoto_driver *gphoto, int *value, char *errMsg)
++{
++    CameraWidget *widget = nullptr, *child = nullptr;
++    CameraWidgetType type;
++    const char *current = nullptr;
++    float numeric = 0;
++    int ret;
++
++    if (gphoto == nullptr || value == nullptr || gphoto->focus_widget == nullptr)
++    {
++        snprintf(errMsg, MAXRBUF, "focus widget is unavailable");
++        return GP_ERROR_BAD_PARAMETERS;
++    }
++
++    ret = gp_camera_get_config(gphoto->camera, &widget, gphoto->context);
++    if (ret < GP_OK)
++    {
++        snprintf(errMsg, MAXRBUF, "camera_get_config failed: %d", ret);
++        return ret;
++    }
++
++    ret = _lookup_widget(widget, gphoto->focus_widget->name, &child);
++    if (ret < GP_OK)
++    {
++        snprintf(errMsg, MAXRBUF, "lookup '%s' failed: %d", gphoto->focus_widget->name, ret);
++        goto out_focus_read;
++    }
++
++    ret = gp_widget_get_type(child, &type);
++    if (ret < GP_OK)
++    {
++        snprintf(errMsg, MAXRBUF, "widget get type failed: %d", ret);
++        goto out_focus_read;
++    }
++
++    if (type == GP_WIDGET_RANGE)
++    {
++        ret = gp_widget_get_value(child, &numeric);
++        if (ret < GP_OK)
++            snprintf(errMsg, MAXRBUF, "could not get range focus value: %d", ret);
++        else
++            *value = static_cast<int>(numeric);
++        goto out_focus_read;
++    }
++
++    if (type != GP_WIDGET_TEXT && type != GP_WIDGET_RADIO && type != GP_WIDGET_MENU)
++    {
++        snprintf(errMsg, MAXRBUF, "unsupported focus widget type: %d", type);
++        ret = GP_ERROR_NOT_SUPPORTED;
++        goto out_focus_read;
++    }
++
++    ret = gp_widget_get_value(child, &current);
++    if (ret < GP_OK || current == nullptr)
++    {
++        snprintf(errMsg, MAXRBUF, "could not get text focus value: %d", ret);
++        goto out_focus_read;
++    }
++
++    char *end = nullptr;
++    long parsed = strtol(current, &end, 10);
++    if (end == current || (end != nullptr && *end != '\0'))
++    {
++        snprintf(errMsg, MAXRBUF, "non-numeric focus value: %s", current);
++        ret = GP_ERROR_BAD_PARAMETERS;
++        goto out_focus_read;
++    }
++
++    *value = static_cast<int>(parsed);
++    ret = GP_OK;
++
++out_focus_read:
++    gp_widget_free(widget);
++    return ret;
++}
++
+ int gphoto_capture_preview(gphoto_driver *gphoto, CameraFile *previewFile, char *errMsg)
+ {
+     int rc = gp_camera_capture_preview(gphoto->camera, previewFile, gphoto->context);
+@@ -2208,8 +2420,9 @@ int gphoto_start_preview(gphoto_driver *gphoto)
  
  int gphoto_stop_preview(gphoto_driver *gphoto)
  {
@@ -696,7 +992,7 @@ index 081d5800..d021a23f 100644
          return GP_OK;
  
      // If viewfinder not found, nothing to do
-@@ -2249,89 +2374,105 @@ int gphoto_manual_focus(gphoto_driver *gphoto, int speed, char *errMsg)
+@@ -2249,89 +2462,90 @@ int gphoto_manual_focus(gphoto_driver *gphoto, int speed, char *errMsg)
  {
      int rc = 0;
  
@@ -709,6 +1005,14 @@ index 081d5800..d021a23f 100644
 +
 +        rc = gp_widget_set_value(gphoto->focus_widget->widget, delta);
 +        if (rc < GP_OK)
++        {
++            snprintf(errMsg, MAXRBUF, "Failed to set Fuji d171 focus delta %s: %s", delta, gp_result_as_string(rc));
++            return rc;
++        }
++    }
++    else
++    {
++        switch (gphoto->focus_widget->type)
          {
 -            // For Canon
 -            // Speed is either
@@ -724,33 +1028,12 @@ index 081d5800..d021a23f 100644
 -            // Mapping target speed to widget choices
 -            uint8_t choice_index = (speed >= 0) ? speed + 3 : (speed * -1) - 1;
 -            if (choice_index > gphoto->focus_widget->choice_cnt)
-+            snprintf(errMsg, MAXRBUF, "Failed to set Fuji d171 focus delta %s: %s", delta, gp_result_as_string(rc));
-+            return rc;
-+        }
-+    }
-+    else
-+    {
-+
-+        switch (gphoto->focus_widget->type)
-+        {
 +            case GP_WIDGET_RADIO:
              {
 -                snprintf(errMsg, MAXRBUF, "Speed %d choice index %d is out of bounds for focus widget count %d",
 -                         speed, choice_index, gphoto->focus_widget->choice_cnt);
 -                return rc;
 -            }
-+                // For Canon
-+                // Speed is either
-+                // 0: (None)
-+                // 1: Far 1
-+                // 2: Far 2
-+                // 3: Far 3
-+                // -1: Near 1
-+                // -2: Near 2
-+                // -3: Near 3
-+
-+                // Widget: Near1, Near2, Near3, None, Far1, Far2, Far3
-+                // Mapping target speed to widget choices
 +                uint8_t choice_index = (speed >= 0) ? speed + 3 : (speed * -1) - 1;
 +                if (choice_index > gphoto->focus_widget->choice_cnt)
 +                {
@@ -762,7 +1045,6 @@ index 081d5800..d021a23f 100644
 -            // Set to None First before setting the actual value
 -            gp_widget_set_value(gphoto->focus_widget->widget, gphoto->focus_widget->choices[3]);
 -            gphoto_set_config(gphoto->camera, gphoto->config, gphoto->context);
-+                // Set to None First before setting the actual value
 +                gp_widget_set_value(gphoto->focus_widget->widget, gphoto->focus_widget->choices[3]);
 +                gphoto_set_config(gphoto->camera, gphoto->config, gphoto->context);
  
@@ -795,7 +1077,6 @@ index 081d5800..d021a23f 100644
 -                switch (speed)
 +                int rval = speed;
 +
-+                /* Range is on Nikon from -32768 <-> 32768 */
 +                if (strstr(device, "Nikon"))
                  {
 -                    case -3:
@@ -872,3 +1153,15 @@ index 081d5800..d021a23f 100644
      }
  
  
+diff --git a/indi-gphoto/gphoto_driver.h b/indi-gphoto/gphoto_driver.h
+index f723d18b745fc580dd3b612b165a5838ff1229d1..8d2a92184accb19a892fc92ff627bba91ce21546 100644
+--- a/indi-gphoto/gphoto_driver.h
++++ b/indi-gphoto/gphoto_driver.h
+@@ -110,6 +110,7 @@ int gphoto_widget_changed(gphoto_widget *widget);
+ int gphoto_get_dimensions(gphoto_driver *gphoto, int *width, int *height);
+ int gphoto_auto_focus(gphoto_driver *gphoto, char *errMsg);
+ int gphoto_manual_focus(gphoto_driver *gphoto, int speed, char *errMsg);
++int gphoto_read_focus_position(gphoto_driver *gphoto, int *value, char *errMsg);
+ bool gphoto_can_focus(gphoto_driver *gphoto);
+ int gphoto_capture_preview(gphoto_driver *gphoto, CameraFile *previewFile, char *errMsg);
+ int gphoto_stop_preview(gphoto_driver *gphoto);

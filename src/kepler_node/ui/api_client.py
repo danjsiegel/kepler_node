@@ -27,7 +27,7 @@ class KeplerApiClient:
 
     def __init__(self, base_url: str = "http://localhost:8000") -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=10.0)
+        self._client = httpx.Client(base_url=self.base_url, timeout=30.0)
 
     # ------------------------------------------------------------------ #
     # Health and status                                                    #

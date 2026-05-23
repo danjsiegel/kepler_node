@@ -28,7 +28,13 @@ from kepler_node.agent.interfaces import (
     NodeManagementBackend,
     ReadinessCondition,
 )
-from kepler_node.agent.session import ClawState, RuntimeSession, WorkflowIntent
+from kepler_node.agent.session import (
+    ClawState,
+    InterventionKind,
+    InterventionLedger,
+    RuntimeSession,
+    WorkflowIntent,
+)
 from kepler_node.camera.protocols import (
     CameraBackend,
     CameraSettings,
@@ -1694,7 +1700,8 @@ class ClawController:
             ekos_blocks_resume = (
                 state.ekos_state in {EkosRuntimeState.UNKNOWN, EkosRuntimeState.UNAVAILABLE}
                 or state.ekos_state == EkosRuntimeState.RUNNING
-                or state.broker_state == BrokerRuntimeState.UNKNOWN
+                or state.broker_state
+                in {BrokerRuntimeState.UNKNOWN, BrokerRuntimeState.UNAVAILABLE}
             )
             if ekos_blocks_resume:
                 self._emit_event(
@@ -1750,7 +1757,29 @@ class ClawController:
                 details={"pause_reason": ctx.pause_reason, "ekos_resume_ok": "False"},
             )
 
-        # Resume succeeded — close the intervention window and hand back to Ekos.
+        # Resume succeeded — confirm Ekos actually resumed before advancing
+        # (spec lines 209-210: adapter must confirm the requested posture).
+        if not self.confirm_ekos_resumed():
+            # Request was accepted but Ekos posture not yet confirmed running.
+            # Stay in PAUSED so the caller can call resume() again.
+            self._intervention_window = InterventionWindowState.RELEASING
+            self._emit_event(
+                EventType.WARNING,
+                "resume: Ekos resume accepted but posture not yet confirmed running; staying paused",
+                EventSeverity.WARNING,
+                details={
+                    "ekos_resume_ok": "True",
+                    "confirmed_running": "False",
+                },
+            )
+            return self._make_transition(
+                prev,
+                ClawState.PAUSED,
+                "resume accepted but Ekos not yet confirmed running; call resume() again",
+                details={"pause_reason": ctx.pause_reason, "active_owner": ActiveOwner.UNKNOWN},
+            )
+
+        # Ekos confirmed running — close the intervention window and hand back to Ekos.
         self._intervention_window = InterventionWindowState.CLOSED
         self.session.state = resume_state
         self.session.workflow_intent = resume_intent
@@ -2258,8 +2287,15 @@ class ClawController:
             ClawState.TEST_CAPTURE,
             ClawState.CAPTURE,
         }
+        _SUPERVISORY_STATES = {
+            ClawState.EKOS_WAIT,
+            ClawState.MONITORING,
+            ClawState.INTERVENING,
+        }
         if prev in _SAFE_RESUME_STATES:
             resume_state = prev
+        elif prev in _SUPERVISORY_STATES:
+            resume_state = ClawState.MONITORING
         elif intent in (WorkflowIntent.CAPTURE, WorkflowIntent.RECOVERY_VERIFICATION):
             resume_state = ClawState.CAPTURE
         else:
@@ -2336,13 +2372,17 @@ class ClawController:
         workflow_intent = self.session.workflow_intent or WorkflowIntent.CALIBRATION
         prev = self.session.state
 
+        # When pausing from an active intervention, resume back to monitoring
+        # so the supervisory loop restarts cleanly after the pause is cleared.
+        resume_state = ClawState.MONITORING if prev == ClawState.INTERVENING else prev
+
         # Request Ekos pause and mark window as REQUESTED (not yet confirmed).
         self.ekos.pause()
         self._intervention_window = InterventionWindowState.REQUESTED
 
         self.session.pause(
             pause_reason="operator pause request",
-            resume_state=prev,
+            resume_state=resume_state,
             workflow_intent=workflow_intent,
         )
         return self._make_transition(prev, ClawState.PAUSED, "session paused by operator")
@@ -2397,6 +2437,469 @@ class ClawController:
 
         self._intervention_window = InterventionWindowState.OPEN
         return True
+
+    def confirm_ekos_resumed(self) -> bool:
+        """Check Ekos resume confirmation (mirror of confirm_ekos_paused for the resume direction).
+
+        Implements the resume side of the adapter responsibility from the spec
+        (lines 209-210): the adapter must confirm when Ekos has actually entered
+        the requested paused **or resumed** posture before Kepler treats the
+        handoff as complete.
+
+        Returns True only when canonical Ekos state is RUNNING, indicating
+        Ekos has actually re-entered its executing posture. Returns False for
+        all other states, including IDLE, RESUMING, ABORTED, UNKNOWN, and
+        UNAVAILABLE.
+        """
+        try:
+            state = self.canonical_state()
+        except Exception:
+            return False
+
+        return state.ekos_state == EkosRuntimeState.RUNNING
+
+    # ------------------------------------------------------------------ #
+    # Supervisory session methods (v1.1)                                   #
+    # ------------------------------------------------------------------ #
+
+    def get_supervision_blockers(self) -> list[ReadinessCondition]:
+        """Return Ekos/broker blockers that would prevent supervisory session attach.
+
+        Used by both ``attach_session()`` and the readiness API so that
+        ``supervision_ready`` and the attach gate stay in sync.
+        """
+        blockers: list[ReadinessCondition] = []
+
+        if self.active_equipment_profile is None:
+            blockers.append(
+                ReadinessCondition(
+                    name="active_equipment_profile_missing",
+                    severity="blocking",
+                    summary="An active equipment profile is required before attaching a supervised session",
+                    operator_action_required=(
+                        "Select an equipment profile before attaching supervision"
+                    ),
+                )
+            )
+
+        try:
+            snap = self.ekos.status()
+            if snap.ekos_state == EkosRuntimeState.UNAVAILABLE:
+                blockers.append(
+                    ReadinessCondition(
+                        name="ekos_unavailable",
+                        severity="blocking",
+                        summary="Ekos is unavailable; ensure KStars/Ekos is running before attaching",
+                        operator_action_required="Start KStars/Ekos and verify the session is reachable",
+                    )
+                )
+        except Exception as exc:
+            blockers.append(
+                ReadinessCondition(
+                    name="ekos_unreachable",
+                    severity="blocking",
+                    summary=f"Ekos reachability check failed: {exc}",
+                    operator_action_required="Verify KStars/Ekos is running and DBus is available",
+                )
+            )
+
+        try:
+            bsnap = self.broker.snapshot()
+            if bsnap.broker_state == BrokerRuntimeState.UNKNOWN:
+                blockers.append(
+                    ReadinessCondition(
+                        name="broker_unknown",
+                        severity="blocking",
+                        summary="INDI broker state is unknown; ensure indiserver is running before attaching",
+                        operator_action_required="Start indiwebmanager and verify the broker profile is active",
+                    )
+                )
+            elif bsnap.broker_state == BrokerRuntimeState.UNAVAILABLE:
+                blockers.append(
+                    ReadinessCondition(
+                        name="broker_unavailable",
+                        severity="blocking",
+                        summary="INDI broker is unreachable; ensure indiwebmanager is running",
+                        operator_action_required="Start indiwebmanager and verify the broker endpoint is accessible",
+                    )
+                )
+            elif bsnap.broker_state == BrokerRuntimeState.DEGRADED and not bsnap.device_path_available:
+                blockers.append(
+                    ReadinessCondition(
+                        name="broker_device_path_unavailable",
+                        severity="blocking",
+                        summary="INDI broker is degraded and the device path is not available",
+                        operator_action_required="Start indiserver through the broker and verify drivers are loaded",
+                    )
+                )
+        except Exception as exc:
+            blockers.append(
+                ReadinessCondition(
+                    name="broker_unreachable",
+                    severity="blocking",
+                    summary=f"Broker reachability check failed: {exc}",
+                    operator_action_required="Verify indiwebmanager is running and accessible",
+                )
+            )
+
+        return blockers
+
+    def attach_session(self) -> TransitionResult:
+        """Gate and attach supervision to an Ekos-managed session. READY → EKOS_WAIT.
+
+        Requires the node to be in READY state, all readiness blockers cleared,
+        an active equipment profile, a reachable Ekos instance, and a reachable
+        broker.  Creates a session_id, persists the initial SessionRecord, and
+        initialises the InterventionLedger before entering EKOS_WAIT.
+
+        Raises ``ValueError`` for wrong state (→ 409).
+        Raises ``RuntimeError`` for readiness or reachability failures (→ 422).
+        """
+        if self.session.state != ClawState.READY:
+            raise ValueError(
+                f"attach_session is only valid from ready (current: {self.session.state})"
+            )
+
+        blockers = self.check_readiness()
+        if blockers:
+            raise RuntimeError(
+                f"attach_session blocked: {blockers[0].name} — {blockers[0].summary}"
+            )
+
+        if self.active_equipment_profile is None:
+            raise RuntimeError(
+                "attach_session requires an active equipment profile; "
+                "POST /api/v1/equipment/profiles/{id}/select first"
+            )
+
+        # Verify Ekos and broker are ready to accept a supervision session.
+        supervision_blockers = self.get_supervision_blockers()
+        if supervision_blockers:
+            raise RuntimeError(
+                f"attach_session blocked: {supervision_blockers[0].name} — "
+                f"{supervision_blockers[0].summary}"
+            )
+
+        now = datetime.now(UTC)
+        session_id = f"session-{now.strftime('%Y%m%dT%H%M%SZ')}-{os.urandom(3).hex()}"
+        self.session.session_id = session_id
+        self._session_started_at = now
+
+        record = SessionRecord(
+            session_id=session_id,
+            started_at=now,
+            updated_at=now,
+            state=ClawState.EKOS_WAIT,
+            equipment_profile_id=self.active_equipment_profile.profile_id,
+            operating_mode="supervised",
+        )
+        self.store.write_session_record(record)
+
+        self.session.intervention_ledger = InterventionLedger()
+        self.session.supervisory_next_action = "wait_for_ekos_session"
+        self.session.workflow_intent = WorkflowIntent.SUPERVISION
+        self.session.control_locked = True
+        self.session.state = ClawState.EKOS_WAIT
+
+        return self._make_transition(
+            ClawState.READY,
+            ClawState.EKOS_WAIT,
+            "supervision attached; waiting for Ekos session",
+        )
+
+    def advance_ekos_wait(self) -> TransitionResult:
+        """Advance from EKOS_WAIT to MONITORING when Ekos session is confirmed active.
+
+        Polls Ekos status.  Returns a TransitionResult with blockers when the
+        Ekos session is not yet ready; transitions to MONITORING on success.
+        Safe to call repeatedly until the session advances.
+        """
+        if self.session.state != ClawState.EKOS_WAIT:
+            return self._make_transition(
+                self.session.state,
+                self.session.state,
+                "not in ekos_wait; advance skipped",
+            )
+
+        prev = self.session.state
+        blockers: list[ReadinessCondition] = []
+
+        try:
+            snap = self.ekos.status()
+            if snap.ekos_state == EkosRuntimeState.UNAVAILABLE:
+                blockers.append(
+                    ReadinessCondition(
+                        name="ekos_unavailable",
+                        severity="blocking",
+                        summary="Ekos is unavailable",
+                        operator_action_required="Start KStars/Ekos and open a sequence",
+                    )
+                )
+            elif snap.ekos_state == EkosRuntimeState.UNKNOWN:
+                blockers.append(
+                    ReadinessCondition(
+                        name="ekos_state_unknown",
+                        severity="blocking",
+                        summary="Ekos state cannot be determined",
+                        operator_action_required="Ensure Ekos is running and check the INDI connection",
+                    )
+                )
+            elif not getattr(snap, "sequence_exists", False):
+                blockers.append(
+                    ReadinessCondition(
+                        name="ekos_no_sequence",
+                        severity="blocking",
+                        summary="No capture sequence loaded in Ekos",
+                        operator_action_required="Load a capture sequence in Ekos, then retry",
+                    )
+                )
+            elif snap.ekos_state not in {
+                EkosRuntimeState.RUNNING,
+            }:
+                # Only an actually running Ekos session justifies advancing to
+                # MONITORING.  IDLE means no sequence is executing; PAUSED means
+                # Ekos is suspended — neither is "Ekos executing normally".
+                blockers.append(
+                    ReadinessCondition(
+                        name="ekos_not_running",
+                        severity="blocking",
+                        summary=f"Ekos session is in state {snap.ekos_state}; waiting for running",
+                        operator_action_required="Start the Ekos capture sequence",
+                    )
+                )
+        except Exception as exc:
+            blockers.append(
+                ReadinessCondition(
+                    name="ekos_status_check_failed",
+                    severity="blocking",
+                    summary=f"Ekos status check failed: {exc}",
+                    operator_action_required="Check Ekos connection and retry",
+                )
+            )
+
+        if blockers:
+            self.session.supervisory_next_action = "wait_for_ekos_session"
+            result = self._make_transition(prev, ClawState.EKOS_WAIT, "ekos_wait: Ekos session not yet ready")
+            result.blockers = blockers
+            return result
+
+        self.session.state = ClawState.MONITORING
+        self.session.supervisory_next_action = "monitor_ekos_session"
+        return self._make_transition(
+            prev, ClawState.MONITORING, "Ekos session confirmed active; beginning supervision"
+        )
+
+    def begin_intervention(self, *, kind: InterventionKind, reason: str) -> TransitionResult:
+        """Transition MONITORING → INTERVENING via confirmed Ekos control handoff.
+
+        Checks the retry budget for the requested kind before proceeding.
+        Requests Ekos pause and waits for ``confirm_ekos_paused()`` to return
+        True before opening the intervention window.  If pause is not yet
+        confirmed the method returns a blocker result and the session stays in
+        MONITORING; the caller should retry on the next poll cycle.
+
+        Raises ``ValueError`` when not in MONITORING state (→ 409).
+        """
+        if self.session.state != ClawState.MONITORING:
+            raise ValueError(
+                f"begin_intervention is only valid from monitoring (current: {self.session.state})"
+            )
+
+        if self.session.intervention_ledger is None:
+            self.session.intervention_ledger = InterventionLedger()
+
+        # If the retry budget is exhausted, request an Ekos pause first so that
+        # Ekos does not keep running underneath Kepler's PAUSED state, then pause
+        # the session.  This mirrors the normal control-handoff protocol and ensures
+        # active_owner is not left ambiguous while Kepler waits for operator input.
+        if self.session.intervention_ledger.is_retry_exhausted(kind):
+            prev = self.session.state
+            self.ekos.pause()
+            self._intervention_window = InterventionWindowState.REQUESTED
+            self.session.pause(
+                pause_reason=f"intervention_retries_exhausted: {kind.value}",
+                resume_state=ClawState.MONITORING,
+                workflow_intent=WorkflowIntent.SUPERVISION,
+                operator_action_required=(
+                    f"Intervention {kind.value} retries exhausted. "
+                    "Review the session and clear the pause when ready to continue."
+                ),
+            )
+            self._emit_event(
+                EventType.OPERATOR_ACTION_REQUIRED,
+                f"intervention retries exhausted for {kind.value}",
+                EventSeverity.ERROR,
+                details={"kind": kind.value, "reason": reason},
+            )
+            return self._make_transition(
+                prev, ClawState.PAUSED, f"intervention retries exhausted: {kind.value}"
+            )
+
+        prev = self.session.state
+
+        # Request Ekos pause and mark window as REQUESTED.
+        self.ekos.pause()
+        self._intervention_window = InterventionWindowState.REQUESTED
+        self._emit_event(
+            EventType.CORRECTIVE_ACTION,
+            f"intervention pause requested: {kind.value} — {reason}",
+            EventSeverity.WARNING,
+            details={"kind": kind.value, "reason": reason},
+        )
+
+        # Confirm Ekos pause before opening the intervention window.
+        # Spec §Control Handoff Protocol: if pause confirmation is missing, stale,
+        # contradictory, or timed out, Kepler must treat ownership as unknown and
+        # move toward `paused` rather than continue automating.
+        paused = self.confirm_ekos_paused()
+        if not paused:
+            self.session.pause(
+                pause_reason="ekos_pause_not_confirmed",
+                resume_state=ClawState.MONITORING,
+                workflow_intent=WorkflowIntent.SUPERVISION,
+                operator_action_required=(
+                    "Ekos pause could not be confirmed after an intervention request. "
+                    "Verify Ekos state and resume when ownership is clear."
+                ),
+            )
+            result = self._make_transition(
+                prev,
+                ClawState.PAUSED,
+                "intervention: Ekos pause not confirmed; moving to paused (ownership unknown)",
+            )
+            result.blockers = [
+                ReadinessCondition(
+                    name="ekos_pause_not_confirmed",
+                    severity="blocking",
+                    summary="Ekos pause not confirmed; Kepler moved to paused — verify Ekos state",
+                )
+            ]
+            return result
+
+        self.session.intervention_ledger.open_intervention(kind, reason)
+        self.session.state = ClawState.INTERVENING
+        self.session.supervisory_next_action = f"execute_{kind.value}"
+
+        return self._make_transition(
+            prev,
+            ClawState.INTERVENING,
+            f"intervention window open: {kind.value} — {reason}",
+            details={"kind": kind.value, "reason": reason},
+        )
+
+    def complete_intervention(self, *, outcome: str = "success") -> TransitionResult:
+        """Close the active intervention window and return to MONITORING.
+
+        Closes the ledger entry, marks the window as RELEASING, requests Ekos
+        resume, and transitions back to MONITORING on success.
+
+        Raises ``ValueError`` when not in INTERVENING state (→ 409).
+        """
+        if self.session.state != ClawState.INTERVENING:
+            raise ValueError(
+                f"complete_intervention is only valid from intervening (current: {self.session.state})"
+            )
+
+        prev = self.session.state
+
+        if self.session.intervention_ledger:
+            self.session.intervention_ledger.close_intervention(outcome)
+
+        self._intervention_window = InterventionWindowState.RELEASING
+
+        ok = self.ekos.resume()
+        if not ok:
+            # Resume failed — window stays RELEASING, ownership unclear.
+            self._intervention_window = InterventionWindowState.REQUESTED
+            self._emit_event(
+                EventType.WARNING,
+                "complete_intervention: Ekos resume failed; staying in intervening",
+                EventSeverity.WARNING,
+            )
+            result = self._make_transition(
+                prev,
+                ClawState.INTERVENING,
+                "intervention complete but Ekos resume failed; retry resume",
+            )
+            result.blockers = [
+                ReadinessCondition(
+                    name="ekos_resume_failed",
+                    severity="blocking",
+                    summary="Ekos resume request failed; call complete_intervention again when Ekos is ready",
+                )
+            ]
+            return result
+
+        # Resume accepted — confirm Ekos actually resumed before advancing
+        # (spec lines 209-210: adapter must confirm the requested posture).
+        if not self.confirm_ekos_resumed():
+            # Request was accepted but Ekos posture not yet confirmed running.
+            # Stay in INTERVENING so the caller can retry complete_intervention().
+            self._intervention_window = InterventionWindowState.RELEASING
+            self._emit_event(
+                EventType.WARNING,
+                "complete_intervention: resume accepted but Ekos posture not yet confirmed running",
+                EventSeverity.WARNING,
+            )
+            unconfirmed_result = self._make_transition(
+                prev,
+                ClawState.INTERVENING,
+                "intervention complete but Ekos resume not yet confirmed; call complete_intervention() again",
+            )
+            unconfirmed_result.blockers = [
+                ReadinessCondition(
+                    name="ekos_resume_unconfirmed",
+                    severity="blocking",
+                    summary="Ekos resume was accepted but posture not yet confirmed running; call complete_intervention() again",
+                )
+            ]
+            return unconfirmed_result
+
+        self._intervention_window = InterventionWindowState.CLOSED
+        self.session.state = ClawState.MONITORING
+        self.session.supervisory_next_action = "monitor_ekos_session"
+
+        return self._make_transition(
+            prev,
+            ClawState.MONITORING,
+            f"intervention complete ({outcome}); resuming monitoring",
+            details={"outcome": outcome},
+        )
+
+    def complete_supervised_session(self) -> TransitionResult:
+        """Mark a supervised session as completed from MONITORING or EKOS_WAIT.
+
+        Valid when the Ekos sequence has ended normally.  Persists the terminal
+        outcome and releases session resources.
+
+        Raises ``ValueError`` when not in a supervisory active state (→ 409).
+        """
+        valid_states = {ClawState.MONITORING, ClawState.EKOS_WAIT}
+        if self.session.state not in valid_states:
+            raise ValueError(
+                f"complete_supervised_session is only valid from monitoring or ekos_wait "
+                f"(current: {self.session.state})"
+            )
+
+        prev = self.session.state
+        from kepler_node.agent.session import TerminalOutcome
+
+        self.session.terminal_outcome = TerminalOutcome.COMPLETED
+        self.session.state = ClawState.COMPLETED
+        self.session.control_locked = False
+        self.session.workflow_intent = None
+        self.session.resume_context = None
+        self.session.intervention_ledger = None
+        self.session.supervisory_next_action = None
+        self.session.ekos_session_id = None
+        self._intervention_window = InterventionWindowState.CLOSED
+
+        try:
+            self._persist_terminal_outcome("supervised session completed")
+        finally:
+            self._release_session_resources()
+
+        return self._make_transition(prev, ClawState.COMPLETED, "supervised session completed")
 
     def fail(self, *, reason: str = "unrecoverable failure") -> TransitionResult:
         """Transition the session to FAILED.  Emits SESSION_OUTCOME and persists."""

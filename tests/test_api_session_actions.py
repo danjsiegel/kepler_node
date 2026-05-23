@@ -24,7 +24,13 @@ from kepler_node.agent.interfaces import (
     TimeSource,
     TimeStatus,
 )
-from kepler_node.agent.session import ClawState, ResumeContext, RuntimeSession, WorkflowIntent
+from kepler_node.agent.session import (
+    ClawState,
+    InterventionLedger,
+    ResumeContext,
+    RuntimeSession,
+    WorkflowIntent,
+)
 from kepler_node.api.app import build_app
 from kepler_node.camera.protocols import CameraSettings, CaptureRequest, CaptureResult
 from kepler_node.imaging.protocols import SolveResult
@@ -255,6 +261,43 @@ def test_release_control_409_when_no_managed_session(tmp_path: Path) -> None:
     client = TestClient(build_app(controller=ctrl))
     resp = client.post("/api/v1/session/release-control")
     assert resp.status_code == 409
+
+
+def test_release_control_clears_supervisory_api_state(tmp_path: Path) -> None:
+    """POST /api/v1/session/release-control must clear intervention state.
+
+    After release-control, GET /api/v1/session/current/intervention must
+    return null (not stale ledger data from the released supervised session).
+    """
+    session = RuntimeSession(
+        session_id="sess-rc-sup-01",
+        state=ClawState.PAUSED,
+        control_locked=True,
+        workflow_intent=WorkflowIntent.SUPERVISION,
+        intervention_ledger=InterventionLedger(),
+        supervisory_next_action="monitor_ekos_session",
+    )
+    session.resume_context = ResumeContext(
+        resume_state=ClawState.MONITORING,
+        workflow_intent=WorkflowIntent.SUPERVISION,
+        pause_reason="operator",
+    )
+    ctrl = _make(session, tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.post("/api/v1/session/release-control")
+    assert resp.status_code == 200
+
+    resp = client.get("/api/v1/session/current/intervention")
+    assert resp.status_code == 200
+    assert resp.json() is None, "intervention endpoint must return null after release-control"
+
+    resp = client.get("/api/v1/session/current/state")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("supervisory_next_action") is None, (
+        "supervisory_next_action must be null after release-control"
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -833,3 +876,74 @@ def test_camera_recover_returns_409_when_ekos_is_busy(tmp_path: Path) -> None:
 
     assert resp.status_code == 409
     assert "Ekos" in resp.json()["detail"]
+
+
+# ------------------------------------------------------------------ #
+# complete_supervised_session / fail: supervisory API state cleanup    #
+# ------------------------------------------------------------------ #
+
+
+def test_complete_supervised_session_clears_supervisory_api_state(tmp_path: Path) -> None:
+    """complete_supervised_session() must clear supervisory fields visible via API.
+
+    After completion, GET /api/v1/session/current/intervention must return null
+    and GET /api/v1/session/current/state must report supervisory_next_action: null.
+    """
+    session = RuntimeSession(
+        session_id="sess-cmp-sup-01",
+        state=ClawState.MONITORING,
+        control_locked=True,
+        workflow_intent=WorkflowIntent.SUPERVISION,
+        intervention_ledger=InterventionLedger(),
+        supervisory_next_action="monitor_ekos_session",
+    )
+    ctrl = _make(session, tmp_path)
+    ctrl.complete_supervised_session()
+
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.get("/api/v1/session/current/intervention")
+    assert resp.status_code == 200
+    assert resp.json() is None, (
+        "intervention endpoint must return null after complete_supervised_session"
+    )
+
+    resp = client.get("/api/v1/session/current/state")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("supervisory_next_action") is None, (
+        "supervisory_next_action must be null after complete_supervised_session"
+    )
+
+
+def test_fail_clears_supervisory_api_state(tmp_path: Path) -> None:
+    """fail() must clear supervisory fields visible via API.
+
+    After a session failure, GET /api/v1/session/current/intervention must return
+    null and GET /api/v1/session/current/state must report supervisory_next_action: null.
+    """
+    session = RuntimeSession(
+        session_id="sess-fail-sup-01",
+        state=ClawState.MONITORING,
+        control_locked=True,
+        workflow_intent=WorkflowIntent.SUPERVISION,
+        intervention_ledger=InterventionLedger(),
+        supervisory_next_action="monitor_ekos_session",
+    )
+    ctrl = _make(session, tmp_path)
+    ctrl.fail(reason="test failure")
+
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.get("/api/v1/session/current/intervention")
+    assert resp.status_code == 200
+    assert resp.json() is None, (
+        "intervention endpoint must return null after fail()"
+    )
+
+    resp = client.get("/api/v1/session/current/state")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("supervisory_next_action") is None, (
+        "supervisory_next_action must be null after fail()"
+    )

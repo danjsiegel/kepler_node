@@ -6,6 +6,8 @@ import json as _json
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -45,14 +47,36 @@ class LocalNodeManagementBackend:
         service_names: list[str] | None = None,
         storage_warning_threshold_bytes: int = 20 * 1024 * 1024 * 1024,
         storage_critical_threshold_bytes: int = 10 * 1024 * 1024 * 1024,
+        indiwebmanager_port: int = 8624,
     ) -> None:
         self.data_root = data_root
         self.service_names = service_names or ["indiserver", "gpsd"]
         self.storage_warning_threshold_bytes = storage_warning_threshold_bytes
         self.storage_critical_threshold_bytes = storage_critical_threshold_bytes
+        self.indiwebmanager_port = indiwebmanager_port
         # Tracks confirmed time source across calls; cleared when a stronger source
         # (NTP, GPS) supersedes operator-confirmed fallback time.
         self._confirmed_source: TimeSource | None = None
+
+    def _indiwebmanager_server_running(self) -> bool:
+        """Return True when indiwebmanager reports an active INDI server.
+
+        In the supported brokered deployment, indiwebmanager owns the indiserver
+        process, so a standalone `indiserver` systemd unit being inactive does
+        not necessarily mean the INDI server is down.
+        """
+        url = f"http://127.0.0.1:{self.indiwebmanager_port}/api/server/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as resp:
+                payload = _json.loads(resp.read().decode())
+        except (urllib.error.URLError, OSError, ValueError):
+            return False
+
+        if isinstance(payload, list):
+            payload = payload[0] if payload else {}
+        if not isinstance(payload, dict):
+            return False
+        return str(payload.get("status", "False")).lower() == "true"
 
     def network_mode(self) -> NetworkMode:
         """Read current node network mode from NetworkManager."""
@@ -84,6 +108,9 @@ class LocalNodeManagementBackend:
                 )
                 healthy = proc.returncode == 0
                 summary = proc.stdout.strip() or ("active" if healthy else "inactive")
+                if name == "indiserver" and not healthy and self._indiwebmanager_server_running():
+                    healthy = True
+                    summary = "broker-managed via indiwebmanager"
             except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
                 healthy = False
                 summary = f"health check failed: {exc}"

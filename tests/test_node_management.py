@@ -97,6 +97,28 @@ def test_service_health_reports_unhealthy_when_systemctl_returns_nonzero(
     assert all(not r.healthy for r in results)
 
 
+def test_service_health_treats_indiserver_as_healthy_when_broker_manages_it(
+    tmp_path: Path,
+) -> None:
+    backend = _make_backend(tmp_path)
+
+    with patch(
+        "subprocess.run",
+        side_effect=[
+            _completed_proc("inactive", returncode=3),
+            _completed_proc("active", returncode=0),
+        ],
+    ):
+        with patch.object(backend, "_indiwebmanager_server_running", return_value=True):
+            results = backend.service_health()
+
+    assert results[0].name == "indiserver"
+    assert results[0].healthy is True
+    assert "broker-managed" in results[0].summary
+    assert results[1].name == "gpsd"
+    assert results[1].healthy is True
+
+
 def test_service_health_reports_unhealthy_on_file_not_found(
     tmp_path: Path,
 ) -> None:

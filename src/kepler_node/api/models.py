@@ -55,6 +55,8 @@ class ReadinessResponse(BaseModel):
     storage_summary: dict[str, Any]
     power_summary: dict[str, Any]
     external_control_summary: dict[str, Any] | None = None
+    supervision_ready: bool = False
+    supervision_blockers: list[BlockerCondition] = Field(default_factory=list)
 
 
 class SessionStateResponse(BaseModel):
@@ -68,6 +70,10 @@ class SessionStateResponse(BaseModel):
     blockers: list[BlockerCondition] = Field(default_factory=list)
     degraded: list[BlockerCondition] = Field(default_factory=list)
     pause_summary: dict[str, Any] | None = None
+    # v1.1 supervisory fields
+    supervisory_next_action: str | None = None
+    active_owner: str | None = None
+    intervention_summary: dict[str, Any] | None = None
 
 
 class SessionSummaryResponse(BaseModel):
@@ -234,3 +240,26 @@ class SessionStartRequest(BaseModel):
     """POST /api/v1/session/start — no required body in v1; run parameters may be in staged target."""
 
     pass
+
+
+# ------------------------------------------------------------------ #
+# Supervisory session API models (v1.1)                                #
+# ------------------------------------------------------------------ #
+
+
+class PlannerModeResponse(BaseModel):
+    """GET /api/v1/planner-mode response."""
+
+    planner_mode: str | None
+    connection_details: dict[str, Any] | None = None
+
+
+class InterventionStateResponse(BaseModel):
+    """GET /api/v1/session/current/intervention response."""
+
+    active_kind: str | None
+    active_reason: str | None
+    active_since: datetime | None
+    retry_count: int
+    recent_records: list[dict[str, Any]]
+    intervention_window: str

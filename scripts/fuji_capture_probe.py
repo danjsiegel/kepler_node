@@ -31,7 +31,7 @@ from typing import NoReturn
 DEFAULT_DEVICE = "Kepler Fuji DSLR Fujifilm X-T5"
 DEFAULT_PROFILE = "Kepler-Starter-Rig"
 DEFAULT_UPLOAD_DIR = "/var/lib/indiwebmanager"
-DEFAULT_LOG_PATH = "/tmp/indiserver.log"
+DEFAULT_LOG_PATH = "/var/lib/indiwebmanager/indiserver.log"
 DEFAULT_RESTART_TIMEOUT = 60.0
 
 

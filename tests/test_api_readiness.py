@@ -8,8 +8,11 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from kepler_node.agent.absolute_state import EkosRuntimeState
 from kepler_node.agent.authorship import AuthorshipTracker
+from kepler_node.agent.broker import BrokerRuntimeState, BrokerSnapshot, StubBrokerBackend
 from kepler_node.agent.claw import ClawController
+from kepler_node.agent.ekos import NormalizedEkosSnapshot, StubEkosAdapter
 from kepler_node.agent.interfaces import (
     NetworkMode,
     PowerStatus,
@@ -113,6 +116,7 @@ class FakeMountBackend:
 class FakeCameraBackend:
     def __init__(self, diagnostic_status: dict | None = None) -> None:
         self._diagnostic_status = diagnostic_status
+        self.diagnostic_calls = 0
 
     def connect(self, settings: CameraSettings) -> None:
         pass
@@ -121,6 +125,7 @@ class FakeCameraBackend:
         pass
 
     def diagnostic_status(self) -> dict | None:
+        self.diagnostic_calls += 1
         return self._diagnostic_status
 
     def capture(self, request: CaptureRequest) -> CaptureResult:
@@ -145,6 +150,8 @@ def _make_controller(
     session: RuntimeSession | None = None,
     node: FakeNodeBackend | None = None,
     camera: FakeCameraBackend | None = None,
+    ekos_adapter: object | None = None,
+    broker_backend: object | None = None,
     tmp_path: Path,
 ) -> ClawController:
     base = tmp_path
@@ -161,6 +168,8 @@ def _make_controller(
         authorship_tracker=AuthorshipTracker(),
         verification_dir=vdir,
         test_exposure_seconds=1.0,
+        ekos_adapter=ekos_adapter,
+        broker_backend=broker_backend,
     )
 
 
@@ -413,6 +422,123 @@ def test_readiness_blocker_has_required_fields(tmp_path: Path) -> None:
     assert "name" in blocker
     assert "severity" in blocker
     assert "summary" in blocker
+
+
+def test_readiness_only_probes_camera_diagnostic_once(tmp_path: Path) -> None:
+    camera = FakeCameraBackend(
+        diagnostic_status={
+            "status": "remote_control_ready",
+            "connected": True,
+            "ready": True,
+            "summary": "Remote-control surface available",
+        }
+    )
+    ctrl = _make_controller(camera=camera, tmp_path=tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.get("/api/v1/readiness")
+
+    assert resp.status_code == 200
+    assert camera.diagnostic_calls == 1
+
+
+# ------------------------------------------------------------------ #
+# GET /api/v1/readiness — supervision_blockers                         #
+# ------------------------------------------------------------------ #
+
+_FAKE_PROFILE = SimpleNamespace(
+    profile_id="test-profile",
+    display_name="Test Profile",
+    hardware=SimpleNamespace(
+        lens=SimpleNamespace(is_zoom=False, default_focal_length_mm=135),
+    ),
+    solving_hints=SimpleNamespace(focal_length_assumption_mm=None),
+)
+
+
+class _UnavailableEkosAdapter(StubEkosAdapter):
+    def status(self) -> NormalizedEkosSnapshot:
+        return NormalizedEkosSnapshot(ekos_state=EkosRuntimeState.UNAVAILABLE)
+
+
+class _UnknownBrokerBackend(StubBrokerBackend):
+    def snapshot(self) -> BrokerSnapshot:
+        return BrokerSnapshot(broker_state=BrokerRuntimeState.UNKNOWN)
+
+
+class _UnavailableBrokerBackend(StubBrokerBackend):
+    def snapshot(self) -> BrokerSnapshot:
+        return BrokerSnapshot(broker_state=BrokerRuntimeState.UNAVAILABLE)
+
+
+def test_readiness_supervision_blockers_when_ekos_unavailable(tmp_path: Path) -> None:
+    """supervision_blockers must be non-empty when Ekos is UNAVAILABLE."""
+    ctrl = _make_controller(
+        session=RuntimeSession(state=ClawState.READY),
+        ekos_adapter=_UnavailableEkosAdapter(),
+        tmp_path=tmp_path,
+    )
+    ctrl.active_equipment_profile = _FAKE_PROFILE
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+    assert data["supervision_ready"] is False
+    blocker_names = [b["name"] for b in data["supervision_blockers"]]
+    assert "ekos_unavailable" in blocker_names
+
+
+def test_readiness_supervision_blockers_when_broker_unknown(tmp_path: Path) -> None:
+    """supervision_blockers must be non-empty when the INDI broker state is UNKNOWN."""
+    ctrl = _make_controller(
+        session=RuntimeSession(state=ClawState.READY),
+        broker_backend=_UnknownBrokerBackend(),
+        tmp_path=tmp_path,
+    )
+    ctrl.active_equipment_profile = _FAKE_PROFILE
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+    assert data["supervision_ready"] is False
+    blocker_names = [b["name"] for b in data["supervision_blockers"]]
+    assert "broker_unknown" in blocker_names
+
+
+def test_readiness_supervision_blockers_when_broker_unavailable(tmp_path: Path) -> None:
+    """supervision_blockers must be non-empty when the INDI broker is UNAVAILABLE."""
+    ctrl = _make_controller(
+        session=RuntimeSession(state=ClawState.READY),
+        broker_backend=_UnavailableBrokerBackend(),
+        tmp_path=tmp_path,
+    )
+    ctrl.active_equipment_profile = _FAKE_PROFILE
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+    assert data["supervision_ready"] is False
+    blocker_names = [b["name"] for b in data["supervision_blockers"]]
+    assert "broker_unavailable" in blocker_names
+
+
+def test_readiness_supervision_ready_false_without_profile(tmp_path: Path) -> None:
+    """supervision_ready must be False when no active equipment profile is set."""
+    ctrl = _make_controller(
+        session=RuntimeSession(state=ClawState.READY),
+        tmp_path=tmp_path,
+    )
+    ctrl.active_equipment_profile = None
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+    assert data["supervision_ready"] is False
+
+
+def test_readiness_supervision_ready_true_when_all_clear(tmp_path: Path) -> None:
+    """supervision_ready is True when state=READY, profile set, and adapters reachable."""
+    ctrl = _make_controller(
+        session=RuntimeSession(state=ClawState.READY),
+        tmp_path=tmp_path,
+    )
+    ctrl.active_equipment_profile = _FAKE_PROFILE
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+    assert data["supervision_ready"] is True
+    assert data["supervision_blockers"] == []
 
 
 # ------------------------------------------------------------------ #

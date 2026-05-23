@@ -488,6 +488,35 @@ def test_diagnostic_status_treats_self_timer_with_zero_delay_as_remote_ready() -
     assert status["capture_delay"] == "0.000s"
 
 
+def test_diagnostic_status_uses_bounded_probe_timeouts() -> None:
+    backend = _make_backend()
+    observed_timeouts: list[int | None] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        observed_timeouts.append(kwargs.get("timeout"))
+        if cmd[:2] == ["gphoto2", "--auto-detect"]:
+            return _proc(
+                stdout="Model                          Port\n---\nFuji Fujifilm X-T5             usb:003,021\n",
+                returncode=0,
+            )
+        if cmd[-1] == "/main/settings/capturetarget":
+            return _proc(stderr="not found in configuration tree", returncode=1)
+        if cmd[-1] == "/main/actions/bulb":
+            return _proc(stdout="Label: Bulb Mode\nCurrent: 2\nEND\n", returncode=0)
+        if cmd[-1] == "/main/capturesettings/capturemode":
+            return _proc(stdout="Label: Still Capture Mode\nCurrent: P\nEND\n", returncode=0)
+        if cmd[-1] == "/main/capturesettings/capturedelay":
+            return _proc(stdout="Label: Capture Delay\nCurrent: 0.000s\nEND\n", returncode=0)
+        return _proc(returncode=1)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        status = backend.diagnostic_status()
+
+    assert status["status"] == "remote_control_ready"
+    assert observed_timeouts
+    assert max(timeout for timeout in observed_timeouts if timeout is not None) <= 2
+
+
 def test_heartbeat_returns_false_when_gphoto2_fails() -> None:
     backend = _make_backend()
     with patch("subprocess.run", return_value=_proc(returncode=1)):

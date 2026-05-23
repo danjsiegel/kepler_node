@@ -330,6 +330,56 @@ def test_kepler_fuji_patch_bundle_includes_integrated_focus_support() -> None:
     assert 'Failed to set Fuji d171 focus delta %s: %s' in content, (
         "the tracked Kepler Fuji DSLR patchset must route manual focus through signed Fuji d171 writes in the active camera session"
     )
+    assert 'int gphoto_read_focus_position(gphoto_driver *gphoto, int *value, char *errMsg);' in content, (
+        "the tracked Kepler Fuji DSLR patchset must add a live Fuji focus-position read helper so achieved d171 readback becomes the driver truth"
+    )
+    assert 'IPState GPhotoCCD::MoveAbsFocuser(uint32_t targetTicks)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must expose an Ekos-readable absolute move path backed by Fuji d171"
+    )
+    assert 'static constexpr int32_t FUJI_D171_ABS_BIAS = 32768;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must map raw Fuji d171 positions into a non-negative virtual absolute step space"
+    )
+
+
+def test_kepler_fuji_patch_bundle_uses_settled_d171_readback_as_move_truth() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'const int FUJI_D171_SETTLE_POLL_US = 200000;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must poll d171 settling at a conservative 200 ms cadence"
+    )
+    assert 'const int FUJI_D171_SETTLE_MAX_POLLS = 25;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must allow up to five seconds for Fuji focus readback to settle"
+    )
+    assert 'const int FUJI_D171_SETTLE_TOLERANCE = 1;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must require a tight settle band before accepting d171 readback as final"
+    )
+    assert 'const int FUJI_D171_SUCCESS_TOLERANCE = 8;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must use an explicit success tolerance instead of pretending Fuji d171 echoes targets exactly"
+    )
+    assert 'Fuji d171 failed to settle after %d polls' in content, (
+        "the tracked Kepler Fuji DSLR patchset must alert if Fuji d171 never settles after a write"
+    )
+    assert 'Fuji d171 settled at raw %d outside tolerance band from requested raw %d' in content, (
+        "the tracked Kepler Fuji DSLR patchset must reject out-of-band settled readback instead of silently reporting target success"
+    )
+    assert 'FocusAbsPosN[0].value = fujiRawToAbsoluteTicks(settledMedian);' in content, (
+        "the tracked Kepler Fuji DSLR patchset must publish the settled d171 median readback as the absolute focuser state"
+    )
+
+
+def test_kepler_fuji_patch_bundle_does_not_advertise_sync_for_virtual_d171_axis() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'FI::SetCapability(FOCUSER_CAN_ABS_MOVE | FOCUSER_CAN_REL_MOVE);' in content, (
+        "the tracked Kepler Fuji DSLR patchset must advertise only absolute and relative focus motion for the virtual d171 axis"
+    )
+    assert 'FOCUSER_CAN_SYNC' not in content, (
+        "the tracked Kepler Fuji DSLR patchset must not advertise sync for the first-cut virtual Fuji d171 focuser contract"
+    )
+    assert 'virtual bool SyncFocuser(uint32_t ticks) override;' not in content, (
+        "the tracked Kepler Fuji DSLR patchset must not declare SyncFocuser for the first-cut virtual Fuji d171 focuser contract"
+    )
+    assert 'bool GPhotoCCD::SyncFocuser(uint32_t ticks)' not in content, (
+        "the tracked Kepler Fuji DSLR patchset must not implement SyncFocuser for the first-cut virtual Fuji d171 focuser contract"
+    )
 
 
 def test_kepler_fuji_patch_bundle_scales_event_timeout_with_requested_exposure() -> None:
@@ -361,6 +411,22 @@ def test_kepler_fuji_patch_bundle_recovers_aborted_captures_gracefully() -> None
     )
     assert 'return result;' in content and 'int result = gphoto_read_exposure(gphoto);' in content, (
         "the tracked Kepler Fuji DSLR patchset must propagate the abort-drain result instead of blindly reporting success"
+    )
+    assert 'pthread_mutex_lock(&gphoto->mutex);' in content and 'pthread_mutex_unlock(&gphoto->mutex);' in content, (
+        "the tracked Kepler Fuji DSLR patchset must clear the abort flag under the same mutex discipline used by the exposure path"
+    )
+
+
+def test_kepler_fuji_patch_bundle_slices_download_retries_for_abort_responsiveness() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'const int FUJI_SLICES_PER_RETRY = 20;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must break each Fuji download retry wait into fixed slices"
+    )
+    assert 'for (int slice = 0; slice < FUJI_SLICES_PER_RETRY; slice++)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must poll for abort between Fuji download retry sleep slices"
+    )
+    assert 'Fuji: image download retry aborted by user request after retry %d.' in content, (
+        "the tracked Kepler Fuji DSLR patchset must log when a Fuji download retry loop exits for an abort"
     )
 
 
