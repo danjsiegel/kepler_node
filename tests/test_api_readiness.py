@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,10 +24,26 @@ from kepler_node.agent.interfaces import (
 )
 from kepler_node.agent.session import ClawState, RuntimeSession
 from kepler_node.api.app import build_app
-from kepler_node.camera.protocols import CameraSettings, CaptureRequest, CaptureResult
+from kepler_node.camera.protocols import (
+    CameraSettings,
+    CaptureRequest,
+    CaptureResult,
+    FocusCalibrationResult,
+)
 from kepler_node.imaging.protocols import SolveResult
 from kepler_node.mount.protocols import MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
+from kepler_node.storage.models import (
+    EquipmentProfile,
+    EquipmentProfileBackendPreferences,
+    EquipmentProfileHardware,
+    EquipmentProfileHardwareCamera,
+    EquipmentProfileHardwareGps,
+    EquipmentProfileHardwareLens,
+    EquipmentProfileHardwareMount,
+    EquipmentProfileSiteDefaults,
+    EquipmentProfileSolvingHints,
+)
 
 # ------------------------------------------------------------------ #
 # Shared fake adapters                                                 #
@@ -135,6 +152,59 @@ class FakeCameraBackend:
         return []
 
 
+class FakeFocusCalibrationCamera(FakeCameraBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.connect_calls = 0
+        self.disconnect_calls = 0
+        self.calibration_calls = 0
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+
+    def disconnect(self) -> None:
+        self.disconnect_calls += 1
+
+    def heartbeat(self) -> bool:
+        return True
+
+    def apply_settings(self, settings: CameraSettings) -> CameraSettings:
+        return settings
+
+    def calibrate_focus_range(self) -> FocusCalibrationResult:
+        self.calibration_calls += 1
+        return FocusCalibrationResult(
+            profile_id="xf55-200@55mm-mf",
+            camera_model="X-T5",
+            lens_model="XF55-200mmF3.5-4.8 R LM OIS",
+            focal_length_mm=55.0,
+            focus_mode="manual",
+            raw_min=-428,
+            raw_max=10442,
+            calibrated_at=datetime(2026, 5, 23),
+        )
+
+
+class FakeFocusBroker(StubBrokerBackend):
+    def __init__(self) -> None:
+        self.stop_calls = 0
+        self.start_calls = 0
+
+    def snapshot(self) -> BrokerSnapshot:
+        return BrokerSnapshot(
+            broker_state=BrokerRuntimeState.READY,
+            profile_active="Kepler-Starter-Rig",
+            device_path_available=True,
+        )
+
+    def stop_active_profile(self) -> str | None:
+        self.stop_calls += 1
+        return "Kepler-Starter-Rig"
+
+    def start_profile(self, profile_name: str) -> None:
+        self.start_calls += 1
+
+
 class FakeSolverBackend:
     def solve(self, image_path: Path, **_: object) -> SolveResult:
         return SolveResult(
@@ -170,6 +240,28 @@ def _make_controller(
         test_exposure_seconds=1.0,
         ekos_adapter=ekos_adapter,
         broker_backend=broker_backend,
+    )
+
+
+def _make_fuji_profile() -> EquipmentProfile:
+    return EquipmentProfile(
+        profile_id="fuji-rig",
+        display_name="Fuji Rig",
+        hardware=EquipmentProfileHardware(
+            mount=EquipmentProfileHardwareMount(model="iEXOS-100"),
+            camera=EquipmentProfileHardwareCamera(make="Fujifilm", model="X-T5"),
+            lens=EquipmentProfileHardwareLens(
+                model="XF55-200mmF3.5-4.8 R LM OIS",
+                is_zoom=True,
+                default_focal_length_mm=55.0,
+            ),
+            gps=EquipmentProfileHardwareGps(),
+        ),
+        site_defaults=EquipmentProfileSiteDefaults(),
+        solving_hints=EquipmentProfileSolvingHints(focal_length_assumption_mm=55.0),
+        backend_preferences=EquipmentProfileBackendPreferences(),
+        created_at=datetime(2026, 5, 23),
+        updated_at=datetime(2026, 5, 23),
     )
 
 
@@ -654,6 +746,59 @@ def test_calibrate_response_sets_control_locked_true(tmp_path: Path) -> None:
     resp = client.post("/api/v1/calibrate")
     assert resp.status_code == 200
     assert resp.json()["control_locked"] is True
+
+
+def test_focus_calibrate_from_ready_returns_to_ready_and_persists_profile(tmp_path: Path) -> None:
+    session = RuntimeSession(state=ClawState.READY)
+    camera = FakeFocusCalibrationCamera()
+    broker = FakeFocusBroker()
+    ctrl = _make_controller(
+        session=session,
+        camera=camera,
+        broker_backend=broker,
+        tmp_path=tmp_path,
+    )
+    profile = _make_fuji_profile()
+    ctrl.store.write_profile(profile)
+    ctrl.set_active_equipment_profile(profile)
+
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.post("/api/v1/focus-calibrate")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "ready"
+    assert data["control_locked"] is False
+    assert camera.calibration_calls == 1
+    assert broker.stop_calls == 1
+    assert broker.start_calls == 1
+
+    stored = ctrl.store.read_profile("fuji-rig")
+    assert stored is not None
+    calibration = stored.hardware.camera.fuji_focus_calibration
+    assert calibration is not None
+    assert calibration.active_profile_id == "xf55-200@55mm-mf"
+
+    runtime_path = tmp_path / "runtime" / "fuji_focus_calibration.json"
+    projection = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert projection["calibration"]["active_profile_id"] == "xf55-200@55mm-mf"
+    assert projection["active_calibration"]["raw_max"] == 10442
+
+
+def test_focus_calibrate_409_when_not_ready(tmp_path: Path) -> None:
+    session = RuntimeSession(state=ClawState.CAPTURE)
+    ctrl = _make_controller(session=session, camera=FakeFocusCalibrationCamera(), tmp_path=tmp_path)
+    ctrl.set_active_equipment_profile(_make_fuji_profile())
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.post("/api/v1/focus-calibrate")
+    assert resp.status_code == 409
+
+
+def test_focus_calibrate_422_without_active_profile(tmp_path: Path) -> None:
+    session = RuntimeSession(state=ClawState.READY)
+    ctrl = _make_controller(session=session, camera=FakeFocusCalibrationCamera(), tmp_path=tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.post("/api/v1/focus-calibrate")
+    assert resp.status_code == 422
 
 
 def test_node_status_control_locked_true_during_calibrate(tmp_path: Path) -> None:

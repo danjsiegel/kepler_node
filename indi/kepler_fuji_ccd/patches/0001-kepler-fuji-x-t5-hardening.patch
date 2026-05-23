@@ -87,21 +87,32 @@ diff --git a/indi-gphoto/gphoto_ccd.cpp b/indi-gphoto/gphoto_ccd.cpp
 index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a37cca313 100644
 --- a/indi-gphoto/gphoto_ccd.cpp
 +++ b/indi-gphoto/gphoto_ccd.cpp
-@@ -27,6 +27,7 @@
+@@ -27,6 +27,10 @@
  #include "gphoto_readimage.h"
  
  #include <algorithm>
 +#include <cstdlib>
++#include <fstream>
++#include <iterator>
++#include <regex>
  #include <stream/streammanager.h>
  
  #include <deque>
-@@ -44,6 +45,11 @@
+@@ -44,6 +45,19 @@
  
  extern char * __progname;
  
 +static bool is_kepler_fuji_driver()
 +{
 +    return !strcmp(__progname, "indi_kepler_fuji_ccd");
++}
++
++static const char *kepler_fuji_focus_calibration_path()
++{
++    const char *configured = getenv("KEPLER_FUJI_FOCUS_CALIBRATION_FILE");
++    if (configured && configured[0] != '\0')
++        return configured;
++    return "data/runtime/fuji_focus_calibration.json";
 +}
 +
  
@@ -185,18 +196,18 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +    if (useKeplerFujiDefaults)
 +    {
 +        FI::SetCapability(FOCUSER_CAN_ABS_MOVE | FOCUSER_CAN_REL_MOVE);
-+        FocusAbsPosN[0].min   = 0;
-+        FocusAbsPosN[0].max   = 65535;
++        FocusAbsPosN[0].min   = 28672;
++        FocusAbsPosN[0].max   = 36864;
 +        FocusAbsPosN[0].step  = 1;
 +        FocusAbsPosN[0].value = 32768;
 +        FocusRelPosN[0].min   = 1;
-+        FocusRelPosN[0].max   = 32768;
++        FocusRelPosN[0].max   = 4096;
 +        FocusRelPosN[0].step  = 1;
 +        FocusRelPosN[0].value = 100;
 +        FocusMaxPosN[0].min   = 1;
 +        FocusMaxPosN[0].max   = 65535;
 +        FocusMaxPosN[0].step  = 1;
-+        FocusMaxPosN[0].value = 65535;
++        FocusMaxPosN[0].value = 36864;
 +    }
 +    else
 +        FI::SetCapability(FOCUSER_CAN_REL_MOVE);
@@ -386,14 +397,60 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
      ISwitch * one_sw = sw;
  
      char sw_name[MAXINDINAME];
-@@ -1710,8 +1879,139 @@ bool GPhotoCCD::SetFocuserSpeed(int speed)
+@@ -1710,8 +1879,236 @@ bool GPhotoCCD::SetFocuserSpeed(int speed)
  }
  #endif
  
++bool GPhotoCCD::loadFujiFocusCalibration()
++{
++    if (!is_kepler_fuji_driver())
++        return false;
++
++    const char *runtimePath = kepler_fuji_focus_calibration_path();
++    std::ifstream input(runtimePath);
++    if (!input)
++        return false;
++
++    const std::string payload((std::istreambuf_iterator<char>(input)),
++                              std::istreambuf_iterator<char>());
++    const auto extractInt = [&payload](const char *key, int &value) -> bool
++    {
++        std::regex pattern(std::string("\"") + key + "\"\\s*:\\s*(-?\\d+)");
++        std::smatch match;
++        if (!std::regex_search(payload, match, pattern))
++            return false;
++        value = std::stoi(match[1].str());
++        return true;
++    };
++
++    int normalizedMax = 0;
++    if (!extractInt("raw_min", m_FujiFocusCalMinRaw) ||
++        !extractInt("raw_max", m_FujiFocusCalMaxRaw) ||
++        !extractInt("normalized_max", normalizedMax))
++    {
++        LOGF_WARN("Kepler Fuji focus calibration file %s is missing required fields", runtimePath);
++        return false;
++    }
++
++    if (m_FujiFocusCalMaxRaw <= m_FujiFocusCalMinRaw || normalizedMax <= 0)
++    {
++        LOGF_WARN("Kepler Fuji focus calibration file %s contains an invalid range", runtimePath);
++        return false;
++    }
++
++    m_FujiFocusNormalizedMax = static_cast<uint32_t>(normalizedMax);
++    m_HaveFujiFocusCalibration = true;
++    LOGF_INFO("Loaded Kepler Fuji focus calibration from %s", runtimePath);
++    return true;
++}
++
 +bool GPhotoCCD::refreshFujiFocusState()
 +{
 +    if (!is_kepler_fuji_driver() || gphotodrv == nullptr)
 +        return false;
++
++    if (!m_HaveFujiFocusCalibration)
++        loadFujiFocusCalibration();
 +
 +    int rawPosition = 0;
 +    char errMsg[MAXRBUF] = {0};
@@ -417,11 +474,39 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +
 +    m_HaveFujiFocusState = true;
 +    FocusAbsPosN[0].value = fujiRawToAbsoluteTicks(rawPosition);
++    if (m_HaveFujiFocusCalibration)
++    {
++        FocusAbsPosN[0].min = 0;
++        FocusAbsPosN[0].max = m_FujiFocusNormalizedMax;
++        FocusAbsPosN[0].value = fujiRawToAbsoluteTicks(rawPosition);
++        FocusMaxPosN[0].value = FocusAbsPosN[0].max;
++        FocusRelPosN[0].max = FocusAbsPosN[0].max;
++        if (FocusRelPosN[0].value > FocusRelPosN[0].max)
++            FocusRelPosN[0].value = FocusRelPosN[0].max;
++        return true;
++    }
++    const int32_t publishedMinRaw = std::max(rawPosition - 4096, -FUJI_D171_ABS_BIAS);
++    const int32_t publishedMaxRaw = std::min(rawPosition + 4096,
++                                             static_cast<int32_t>(FUJI_D171_ABS_MAX) - FUJI_D171_ABS_BIAS);
++    FocusAbsPosN[0].min = fujiRawToAbsoluteTicks(publishedMinRaw);
++    FocusAbsPosN[0].max = fujiRawToAbsoluteTicks(publishedMaxRaw);
++    FocusMaxPosN[0].value = FocusAbsPosN[0].max;
++    FocusRelPosN[0].max = FocusAbsPosN[0].max - FocusAbsPosN[0].min;
++    if (FocusRelPosN[0].value > FocusRelPosN[0].max)
++        FocusRelPosN[0].value = FocusRelPosN[0].max;
 +    return true;
 +}
 +
 +uint32_t GPhotoCCD::fujiRawToAbsoluteTicks(int32_t rawTicks) const
 +{
++    if (m_HaveFujiFocusCalibration && m_FujiFocusCalMaxRaw > m_FujiFocusCalMinRaw)
++    {
++        const int32_t clampedRaw = std::min(std::max(rawTicks, m_FujiFocusCalMinRaw), m_FujiFocusCalMaxRaw);
++        const int64_t span = static_cast<int64_t>(m_FujiFocusCalMaxRaw) - m_FujiFocusCalMinRaw;
++        const int64_t offset = static_cast<int64_t>(clampedRaw) - m_FujiFocusCalMinRaw;
++        return static_cast<uint32_t>((offset * m_FujiFocusNormalizedMax) / span);
++    }
++
 +    const int32_t biasedTicks = rawTicks + FUJI_D171_ABS_BIAS;
 +    if (biasedTicks < 0)
 +        return 0;
@@ -432,6 +517,16 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +
 +int32_t GPhotoCCD::fujiAbsoluteToRawTicks(uint32_t absoluteTicks) const
 +{
++    if (m_HaveFujiFocusCalibration && m_FujiFocusCalMaxRaw > m_FujiFocusCalMinRaw)
++    {
++        if (absoluteTicks > m_FujiFocusNormalizedMax)
++            absoluteTicks = m_FujiFocusNormalizedMax;
++
++        const int64_t span = static_cast<int64_t>(m_FujiFocusCalMaxRaw) - m_FujiFocusCalMinRaw;
++        return m_FujiFocusCalMinRaw + static_cast<int32_t>((static_cast<int64_t>(absoluteTicks) * span) /
++                                                           m_FujiFocusNormalizedMax);
++    }
++
 +    if (absoluteTicks > FUJI_D171_ABS_MAX)
 +        absoluteTicks = FUJI_D171_ABS_MAX;
 +    return static_cast<int32_t>(absoluteTicks) - FUJI_D171_ABS_BIAS;
@@ -446,6 +541,19 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +    const int FUJI_D171_SETTLE_MAX_POLLS = 25;
 +    const int FUJI_D171_SETTLE_TOLERANCE = 1;
 +    const int FUJI_D171_SUCCESS_TOLERANCE = 8;
++    if (!m_HaveFujiFocusState && !refreshFujiFocusState())
++        return IPS_ALERT;
++
++    const uint32_t publishedMinTicks = static_cast<uint32_t>(FocusAbsPosN[0].min);
++    const uint32_t publishedMaxTicks = static_cast<uint32_t>(FocusAbsPosN[0].max);
++    if (targetTicks < publishedMinTicks || targetTicks > publishedMaxTicks)
++    {
++        const uint32_t clampedTargetTicks = std::min(std::max(targetTicks, publishedMinTicks), publishedMaxTicks);
++        LOGF_WARN("Clamping Fuji absolute focus target from %u to %u within published range [%u, %u]",
++                  targetTicks, clampedTargetTicks, publishedMinTicks, publishedMaxTicks);
++        targetTicks = clampedTargetTicks;
++    }
++
 +    const int32_t targetRaw = fujiAbsoluteToRawTicks(targetTicks);
 +    char errMsg[MAXRBUF] = {0};
 +    if (gphoto_manual_focus(gphotodrv, targetRaw, errMsg) != GP_OK)
@@ -531,18 +639,19 @@ index 2fc2c97dd3c28bac066bdd915ab0b1f9712f52eb..5da91f482fbc4306e93ca7ce3a86a347
 --- a/indi-gphoto/gphoto_ccd.h
 +++ b/indi-gphoto/gphoto_ccd.h
 @@ -124,6 +124,7 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
-          * Return IPS_ALERT if there is an error.
-          */
-         virtual IPState MoveRelFocuser(FocusDirection dir, uint32_t ticks) override;
+      * Return IPS_ALERT if there is an error.
+      */
+     virtual IPState MoveRelFocuser(FocusDirection dir, uint32_t ticks) override;
 +        virtual IPState MoveAbsFocuser(uint32_t targetTicks) override;
  
-         // Streaming
-         bool StartStreaming() override;
-@@ -168,7 +169,21 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
+      // Streaming
+      bool StartStreaming() override;
+@@ -168,7 +169,26 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
  
          // Focus
          bool m_CanFocus { false };
 +        bool refreshFujiFocusState();
++        bool loadFujiFocusCalibration();
 +        uint32_t fujiRawToAbsoluteTicks(int32_t rawTicks) const;
 +        int32_t fujiAbsoluteToRawTicks(uint32_t absoluteTicks) const;
 +        static constexpr int32_t FUJI_D171_ABS_BIAS = 32768;
@@ -554,9 +663,13 @@ index 2fc2c97dd3c28bac066bdd915ab0b1f9712f52eb..5da91f482fbc4306e93ca7ce3a86a347
 +        static constexpr int32_t FUJI_D171_JUMP_RESET_THRESHOLD = 256;
          int32_t m_TargetLargeStep {0}, m_TargetMedStep {0}, m_TargetLowStep {0}, m_FocusTimerID {-1};
 +        bool m_HaveFujiFocusState { false };
++        bool m_HaveFujiFocusCalibration { false };
 +        int32_t m_FujiFocusRawCurrent { 0 };
 +        int32_t m_FujiFocusMinRaw { 0 };
 +        int32_t m_FujiFocusMaxRaw { 0 };
++        int32_t m_FujiFocusCalMinRaw { 0 };
++        int32_t m_FujiFocusCalMaxRaw { 0 };
++        uint32_t m_FujiFocusNormalizedMax { 10000 };
  
          int liveVideoWidth  {-1};
          int liveVideoHeight {-1};

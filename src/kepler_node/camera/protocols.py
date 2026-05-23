@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Iterable, Protocol
+from typing import Any, Iterable, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,24 @@ class CaptureResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class FocusCalibrationResult(BaseModel):
+    """Bounded raw focus range discovered for one calibrated posture."""
+
+    profile_id: str
+    camera_model: str | None = None
+    lens_model: str | None = None
+    focal_length_mm: float | None = None
+    focus_mode: str | None = None
+    raw_min: int
+    raw_max: int
+    normalized_max: int = 10_000
+    settle_tolerance: int = 8
+    safety_margin: int = 32
+    calibrated_at: datetime = Field(default_factory=datetime.utcnow)
+    validation_source: str = "operator"
+    notes: str = ""
+
+
 class CameraBackend(Protocol):
     """Camera backend contract used by orchestration."""
 
@@ -67,3 +85,11 @@ class CameraBackend(Protocol):
 
     def activity_events(self) -> Iterable[DeviceActivityEvent]:
         """Yield normalized observed device activity for conflict detection."""
+
+
+@runtime_checkable
+class FocusCalibrationCapable(Protocol):
+    """Optional camera capability for bounded focus calibration."""
+
+    def calibrate_focus_range(self) -> FocusCalibrationResult:
+        """Discover and return a calibrated raw focus working range."""

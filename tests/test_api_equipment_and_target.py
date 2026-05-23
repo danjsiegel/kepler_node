@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from kepler_node.storage.filesystem import FilesystemSessionStore
 from kepler_node.storage.models import (
     EquipmentProfile,
     EquipmentProfileBackendPreferences,
+    EquipmentProfileFocusCalibration,
     EquipmentProfileHardware,
     EquipmentProfileHardwareCamera,
     EquipmentProfileHardwareGps,
@@ -35,6 +37,7 @@ from kepler_node.storage.models import (
     EquipmentProfileHardwareMount,
     EquipmentProfileSiteDefaults,
     EquipmentProfileSolvingHints,
+    FujiFocusCalibrationProfile,
     InstallManifest,
 )
 
@@ -167,6 +170,26 @@ def _make_profile(
     )
 
 
+def _make_fuji_focus_calibration(*, focal_length_mm: float, raw_min: int, raw_max: int) -> dict:
+    profile_id = f"xf55-200@{int(focal_length_mm)}mm-mf"
+    calibration = EquipmentProfileFocusCalibration(
+        active_profile_id=profile_id,
+        profiles={
+            profile_id: FujiFocusCalibrationProfile(
+                profile_id=profile_id,
+                camera_model="X-T5",
+                lens_model="XF55-200mmF3.5-4.8 R LM OIS",
+                focal_length_mm=focal_length_mm,
+                focus_mode="manual",
+                raw_min=raw_min,
+                raw_max=raw_max,
+                calibrated_at=datetime(2026, 5, 23, tzinfo=UTC),
+            )
+        },
+    )
+    return calibration.model_dump(mode="json")
+
+
 def test_api_get_equipment_profiles_empty(tmp_path: Path) -> None:
     client = _make_api_client(tmp_path)
     resp = client.get("/api/v1/equipment/profiles")
@@ -197,6 +220,171 @@ def test_api_post_and_get_equipment_profile(tmp_path: Path) -> None:
     resp2 = client.get("/api/v1/equipment/profiles/my-rig")
     assert resp2.status_code == 200
     assert resp2.json()["profile"]["display_name"] == "My Rig"
+
+
+def test_api_post_and_get_equipment_profile_preserves_fuji_focus_calibration(
+    tmp_path: Path,
+) -> None:
+    client = _make_api_client(tmp_path)
+    payload = {
+        "profile_id": "fuji-rig",
+        "display_name": "Fuji Rig",
+        "hardware": {
+            "mount": {"model": "iEXOS-100"},
+            "camera": {
+                "make": "Fujifilm",
+                "model": "X-T5",
+                "fuji_focus_calibration": _make_fuji_focus_calibration(
+                    focal_length_mm=55.0,
+                    raw_min=-428,
+                    raw_max=10442,
+                ),
+            },
+            "lens": {"model": "XF55-200mmF3.5-4.8 R LM OIS", "is_zoom": True},
+            "gps": {},
+        },
+        "site_defaults": {},
+        "solving_hints": {"focal_length_assumption_mm": 55.0},
+        "backend_preferences": {},
+    }
+    resp = client.post("/api/v1/equipment/profiles", json=payload)
+    assert resp.status_code == 201
+
+    resp2 = client.get("/api/v1/equipment/profiles/fuji-rig")
+    assert resp2.status_code == 200
+    calibration = resp2.json()["profile"]["hardware"]["camera"]["fuji_focus_calibration"]
+    assert calibration["active_profile_id"] == "xf55-200@55mm-mf"
+    stored = calibration["profiles"]["xf55-200@55mm-mf"]
+    assert stored["raw_min"] == -428
+    assert stored["raw_max"] == 10442
+    assert stored["normalized_max"] == 10000
+
+
+def test_api_put_equipment_profile_updates_fuji_focus_calibration(tmp_path: Path) -> None:
+    client = _make_api_client(tmp_path)
+    payload = {
+        "profile_id": "rig-fuji",
+        "display_name": "Rig Fuji",
+        "hardware": {
+            "mount": {"model": "iEXOS-100"},
+            "camera": {"make": "Fujifilm", "model": "X-T5"},
+            "lens": {"model": "XF55-200mmF3.5-4.8 R LM OIS", "is_zoom": True},
+            "gps": {},
+        },
+        "site_defaults": {},
+        "solving_hints": {"focal_length_assumption_mm": 55.0},
+        "backend_preferences": {},
+    }
+    client.post("/api/v1/equipment/profiles", json=payload)
+
+    updated = {
+        **payload,
+        "hardware": {
+            **payload["hardware"],
+            "camera": {
+                "make": "Fujifilm",
+                "model": "X-T5",
+                "fuji_focus_calibration": _make_fuji_focus_calibration(
+                    focal_length_mm=135.0,
+                    raw_min=1498,
+                    raw_max=10234,
+                ),
+            },
+        },
+    }
+    resp = client.put("/api/v1/equipment/profiles/rig-fuji", json=updated)
+    assert resp.status_code == 200
+    calibration = resp.json()["profile"]["hardware"]["camera"]["fuji_focus_calibration"]
+    assert calibration["active_profile_id"] == "xf55-200@135mm-mf"
+    assert calibration["profiles"]["xf55-200@135mm-mf"]["focal_length_mm"] == 135.0
+
+
+def test_api_select_equipment_profile_writes_fuji_focus_runtime_projection(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path)
+    profile = _make_profile(profile_id="fuji-runtime", display_name="Fuji Runtime")
+    profile.hardware.camera = EquipmentProfileHardwareCamera(
+        make="Fujifilm",
+        model="X-T5",
+        fuji_focus_calibration=EquipmentProfileFocusCalibration.model_validate(
+            _make_fuji_focus_calibration(focal_length_mm=55.0, raw_min=-428, raw_max=10442)
+        ),
+    )
+    profile.hardware.lens = EquipmentProfileHardwareLens(
+        model="XF55-200mmF3.5-4.8 R LM OIS",
+        is_zoom=True,
+        default_focal_length_mm=55.0,
+    )
+    ctrl.store.write_profile(profile)
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.post("/api/v1/equipment/profiles/fuji-runtime/select")
+    assert resp.status_code == 200
+
+    runtime_path = tmp_path / "runtime" / "fuji_focus_calibration.json"
+    assert runtime_path.exists()
+    projection = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert projection["equipment_profile_id"] == "fuji-runtime"
+    assert projection["calibration"]["active_profile_id"] == "xf55-200@55mm-mf"
+    assert projection["active_calibration"]["raw_min"] == -428
+    assert projection["lens"]["active_focal_length_mm"] == 55.0
+
+
+def test_api_put_active_equipment_profile_refreshes_fuji_focus_runtime_projection(
+    tmp_path: Path,
+) -> None:
+    ctrl = _make_controller(tmp_path)
+    profile = _make_profile(profile_id="rig-active", is_default=True)
+    profile.hardware.camera = EquipmentProfileHardwareCamera(
+        make="Fujifilm",
+        model="X-T5",
+        fuji_focus_calibration=EquipmentProfileFocusCalibration.model_validate(
+            _make_fuji_focus_calibration(focal_length_mm=55.0, raw_min=-428, raw_max=10442)
+        ),
+    )
+    profile.hardware.lens = EquipmentProfileHardwareLens(
+        model="XF55-200mmF3.5-4.8 R LM OIS",
+        is_zoom=True,
+        default_focal_length_mm=55.0,
+    )
+    ctrl.store.write_profile(profile)
+    ctrl.set_active_equipment_profile(profile)
+    ctrl.session.calibration_accepted = True
+
+    client = TestClient(build_app(controller=ctrl))
+
+    updated_payload = {
+        "profile_id": "rig-active",
+        "display_name": "Rig Active Updated",
+        "hardware": {
+            "mount": {"model": "EQ6-R"},
+            "camera": {
+                "make": "Fujifilm",
+                "model": "X-T5",
+                "fuji_focus_calibration": _make_fuji_focus_calibration(
+                    focal_length_mm=135.0,
+                    raw_min=1498,
+                    raw_max=10234,
+                ),
+            },
+            "lens": {
+                "model": "XF55-200mmF3.5-4.8 R LM OIS",
+                "is_zoom": True,
+                "default_focal_length_mm": 135.0,
+            },
+            "gps": {},
+        },
+        "site_defaults": {},
+        "solving_hints": {"focal_length_assumption_mm": 135.0},
+        "backend_preferences": {},
+        "is_default": True,
+    }
+    resp = client.put("/api/v1/equipment/profiles/rig-active", json=updated_payload)
+    assert resp.status_code == 200
+
+    runtime_path = tmp_path / "runtime" / "fuji_focus_calibration.json"
+    projection = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert projection["calibration"]["active_profile_id"] == "xf55-200@135mm-mf"
+    assert projection["lens"]["active_focal_length_mm"] == 135.0
 
 
 def test_api_post_equipment_profile_duplicate_returns_409(tmp_path: Path) -> None:

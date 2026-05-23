@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -39,6 +40,8 @@ from kepler_node.camera.protocols import (
     CameraBackend,
     CameraSettings,
     CaptureRequest,
+    FocusCalibrationCapable,
+    FocusCalibrationResult,
     ShutterPreference,
 )
 from kepler_node.imaging.protocols import SolveFailureCategory, SolverBackend
@@ -46,9 +49,11 @@ from kepler_node.mount.protocols import MountBackend, MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
 from kepler_node.storage.models import (
     EquipmentProfile,
+    EquipmentProfileFocusCalibration,
     EventRecord,
     EventSeverity,
     EventType,
+    FujiFocusCalibrationProfile,
     SessionRecord,
     SessionScope,
 )
@@ -208,6 +213,162 @@ class ClawController:
         """In-memory buffer of node-scoped pre-session diagnostic events."""
         return self._node_events
 
+    @property
+    def fuji_focus_calibration_runtime_path(self) -> Path:
+        """Projected runtime calibration file for Fuji integrations."""
+
+        configured = os.getenv("KEPLER_FUJI_FOCUS_CALIBRATION_FILE")
+        if configured:
+            return Path(configured)
+        return self.store.data_root / "runtime" / "fuji_focus_calibration.json"
+
+    def refresh_focus_calibration_projection(self) -> Path | None:
+        """Write or remove the projected Fuji focus calibration runtime file."""
+
+        runtime_path = self.fuji_focus_calibration_runtime_path
+        profile = self.active_equipment_profile
+        calibration = None
+        if profile is not None:
+            calibration = profile.hardware.camera.fuji_focus_calibration
+
+        if profile is None or calibration is None or not calibration.profiles:
+            if runtime_path.exists():
+                runtime_path.unlink()
+            return None
+
+        active_calibration = None
+        if calibration.active_profile_id:
+            active_calibration = calibration.profiles.get(calibration.active_profile_id)
+
+        runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": 1,
+            "equipment_profile_id": profile.profile_id,
+            "updated_at": profile.updated_at.isoformat(),
+            "camera": {
+                "make": profile.hardware.camera.make,
+                "model": profile.hardware.camera.model,
+            },
+            "lens": {
+                "model": profile.hardware.lens.model,
+                "is_zoom": profile.hardware.lens.is_zoom,
+                "default_focal_length_mm": profile.hardware.lens.default_focal_length_mm,
+                "active_focal_length_mm": (
+                    profile.solving_hints.focal_length_assumption_mm
+                    or profile.hardware.lens.default_focal_length_mm
+                ),
+            },
+            "calibration": calibration.model_dump(mode="json"),
+            "active_calibration": (
+                active_calibration.model_dump(mode="json") if active_calibration else None
+            ),
+        }
+        runtime_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        return runtime_path
+
+    def set_active_equipment_profile(self, profile: EquipmentProfile | None) -> None:
+        """Set the active profile and refresh the projected focus calibration."""
+
+        self.active_equipment_profile = profile
+        self.refresh_focus_calibration_projection()
+
+    def _persist_focus_calibration_result(self, result: FocusCalibrationResult) -> None:
+        """Persist one focus calibration result into the active equipment profile."""
+
+        profile = self.active_equipment_profile
+        if profile is None:
+            raise RuntimeError("focus calibration requires an active equipment profile")
+
+        if profile.hardware.camera.fuji_focus_calibration is None:
+            profile.hardware.camera.fuji_focus_calibration = EquipmentProfileFocusCalibration()
+
+        calibration = profile.hardware.camera.fuji_focus_calibration
+        assert calibration is not None
+        calibration.profiles[result.profile_id] = FujiFocusCalibrationProfile(
+            profile_id=result.profile_id,
+            camera_model=result.camera_model,
+            lens_model=result.lens_model,
+            focal_length_mm=result.focal_length_mm,
+            focus_mode=result.focus_mode,
+            raw_min=result.raw_min,
+            raw_max=result.raw_max,
+            normalized_max=result.normalized_max,
+            settle_tolerance=result.settle_tolerance,
+            safety_margin=result.safety_margin,
+            calibrated_at=result.calibrated_at,
+            validation_source=result.validation_source,
+            notes=result.notes,
+        )
+        calibration.active_profile_id = result.profile_id
+        profile.updated_at = datetime.now(UTC)
+        if result.camera_model and not profile.hardware.camera.model:
+            profile.hardware.camera.model = result.camera_model
+        if result.lens_model and not profile.hardware.lens.model:
+            profile.hardware.lens.model = result.lens_model
+        if result.focal_length_mm is not None:
+            profile.solving_hints.focal_length_assumption_mm = result.focal_length_mm
+            if profile.hardware.lens.default_focal_length_mm is None:
+                profile.hardware.lens.default_focal_length_mm = result.focal_length_mm
+
+        self.store.write_profile(profile)
+        self.set_active_equipment_profile(profile)
+
+    def run_focus_calibration(self) -> TransitionResult:
+        """Run a bounded pre-session focus calibration and return to READY."""
+
+        if self.session.state != ClawState.READY:
+            raise ValueError(
+                f"focus calibration is only valid from ready, current state: {self.session.state}"
+            )
+        blockers = self.check_readiness()
+        if blockers:
+            raise RuntimeError(f"focus calibration blocked: {blockers[0].name}")
+        if self.active_equipment_profile is None:
+            raise RuntimeError("focus calibration requires an active equipment profile")
+        if not isinstance(self.camera, FocusCalibrationCapable):
+            raise RuntimeError("camera backend does not support focus calibration")
+
+        self.session.enter_focus_calibrate()
+        self._make_transition(ClawState.READY, ClawState.CALIBRATE, "starting focus calibration")
+
+        stopped_profile: str | None = None
+        try:
+            stopped_profile = self.broker.stop_active_profile()
+            self.camera.connect()
+            result = self.camera.calibrate_focus_range()
+            self._persist_focus_calibration_result(result)
+        except Exception as exc:
+            try:
+                self.camera.disconnect()
+            except Exception:
+                pass
+            restart_error = None
+            if stopped_profile is not None:
+                try:
+                    self.broker.start_profile(stopped_profile)
+                except Exception as broker_exc:
+                    restart_error = str(broker_exc)
+            self.session.state = ClawState.READY
+            self.session.workflow_intent = None
+            self.session.control_locked = False
+            detail = f"focus calibration failed: {exc}"
+            if restart_error:
+                detail = f"{detail}; broker restart also failed: {restart_error}"
+            raise RuntimeError(detail) from exc
+
+        self.camera.disconnect()
+        if stopped_profile is not None:
+            self.broker.start_profile(stopped_profile)
+
+        self.session.state = ClawState.READY
+        self.session.workflow_intent = None
+        self.session.control_locked = False
+        return self._make_transition(
+            ClawState.CALIBRATE,
+            ClawState.READY,
+            "focus calibration completed; node returned to ready",
+        )
+
     def canonical_state(self) -> CanonicalAbsoluteState:
         """Synthesize and return the current canonical absolute state.
 
@@ -355,7 +516,7 @@ class ClawController:
             else:
                 defaults = [p for p in stored_profiles if p.is_default]
                 if len(defaults) == 1:
-                    self.active_equipment_profile = defaults[0]
+                    self.set_active_equipment_profile(defaults[0])
                 elif len(defaults) > 1:
                     degraded.append(
                         ReadinessCondition(

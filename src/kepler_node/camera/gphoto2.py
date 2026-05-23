@@ -15,6 +15,7 @@ from kepler_node.camera.protocols import (
     CameraSettings,
     CaptureRequest,
     CaptureResult,
+    FocusCalibrationResult,
     ShutterPreference,
 )
 
@@ -52,6 +53,9 @@ _ZERO_CAPTURE_DELAY_ASSIGNMENTS = (
 )
 
 _DIAGNOSTIC_PROBE_TIMEOUT_SECONDS = 2
+_FUJI_FOCUS_CONFIG_PATH = "/main/other/d171"
+_FUJI_FOCUS_EXTREME_LOW = -32768
+_FUJI_FOCUS_EXTREME_HIGH = 32767
 
 
 class Gphoto2CameraBackend:
@@ -105,6 +109,94 @@ class Gphoto2CameraBackend:
             if line.startswith("Current:"):
                 return line.split(":", 1)[1].strip()
         return None
+
+    def _set_config_value(self, assignment: str, *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+        return self._run(["--set-config", assignment], timeout=timeout)
+
+    def _read_focus_position_raw(self, *, timeout: int = 10) -> int:
+        current = self._config_current_value(_FUJI_FOCUS_CONFIG_PATH, timeout=timeout)
+        if current is None:
+            raise RuntimeError("Fuji focus position is unavailable")
+        try:
+            return int(float(current))
+        except ValueError as exc:
+            raise RuntimeError(f"Fuji focus position is non-numeric: {current}") from exc
+
+    def _set_focus_position_raw(self, raw_value: int, *, timeout: int = 30) -> None:
+        result = self._set_config_value(f"{_FUJI_FOCUS_CONFIG_PATH}={raw_value}", timeout=timeout)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            raise RuntimeError(f"Fuji focus move failed for raw {raw_value}: {detail}")
+
+    def _wait_for_focus_settle(
+        self,
+        *,
+        settle_tolerance: int = 1,
+        poll_interval_seconds: float = 0.2,
+        max_polls: int = 25,
+    ) -> int:
+        stable_reads = 0
+        previous = None
+        samples: list[int] = []
+        for _ in range(max_polls):
+            current = self._read_focus_position_raw()
+            samples.append(current)
+            if previous is None:
+                stable_reads = 1
+            elif abs(current - previous) <= settle_tolerance:
+                stable_reads += 1
+            else:
+                stable_reads = 1
+            previous = current
+            if stable_reads >= 3:
+                return sorted(samples[-3:])[1]
+            time.sleep(poll_interval_seconds)
+        raise RuntimeError("Fuji focus position did not settle")
+
+    @staticmethod
+    def _parse_first_float(raw_value: str | None) -> float | None:
+        if raw_value is None:
+            return None
+        match = re.search(r"-?\d+(?:\.\d+)?", raw_value)
+        if match is None:
+            return None
+        return float(match.group(0))
+
+    def _current_lens_model(self) -> str | None:
+        return self._config_current_value(
+            self._first_readable_config(
+                (
+                    "/main/status/lensname",
+                    "/main/imgsettings/lensname",
+                    "/main/status/lens",
+                )
+            )
+            or "/main/status/cameramodel"
+        )
+
+    def _current_camera_model(self) -> str | None:
+        return self._config_current_value(
+            self._first_readable_config(
+                (
+                    "/main/status/cameramodel",
+                    "/main/status/model",
+                )
+            )
+            or "/main/status/cameramodel"
+        )
+
+    def _current_focal_length_mm(self) -> float | None:
+        config_path = self._first_readable_config(
+            (
+                "/main/status/focallength",
+                "/main/capturesettings/focallength",
+            )
+        )
+        return self._parse_first_float(self._config_current_value(config_path)) if config_path else None
+
+    def _current_focus_mode(self) -> str | None:
+        config_path = self._first_readable_config(("/main/capturesettings/focusmode",))
+        return self._config_current_value(config_path) if config_path else None
 
     def _first_readable_config(
         self, config_paths: tuple[str, ...], *, timeout: int = 30
@@ -604,6 +696,60 @@ class Gphoto2CameraBackend:
                     )
 
         self._connected = True
+
+    def calibrate_focus_range(self) -> FocusCalibrationResult:
+        """Discover a bounded Fuji focus working range using d171 readback."""
+
+        if not self._config_read_succeeds(_FUJI_FOCUS_CONFIG_PATH, timeout=10):
+            raise RuntimeError("Fuji d171 focus control is unavailable for calibration")
+
+        current_raw = self._read_focus_position_raw()
+        self._set_focus_position_raw(_FUJI_FOCUS_EXTREME_LOW)
+        settled_low = self._wait_for_focus_settle()
+
+        self._set_focus_position_raw(_FUJI_FOCUS_EXTREME_HIGH)
+        settled_high = self._wait_for_focus_settle()
+
+        raw_floor = min(settled_low, settled_high)
+        raw_ceiling = max(settled_low, settled_high)
+        safety_margin = 32
+        working_min = raw_floor + safety_margin
+        working_max = raw_ceiling - safety_margin
+        if working_min >= working_max:
+            raise RuntimeError(
+                f"Fuji focus calibration produced no safe interior range: {raw_floor}..{raw_ceiling}"
+            )
+
+        restore_raw = min(max(current_raw, working_min), working_max)
+        self._set_focus_position_raw(restore_raw)
+        restored = self._wait_for_focus_settle()
+
+        lens_model = self._current_lens_model()
+        focal_length_mm = self._current_focal_length_mm()
+        profile_id = "fuji-focus"
+        if lens_model:
+            normalized_lens = re.sub(r"[^a-z0-9]+", "-", lens_model.lower()).strip("-")
+            profile_id = normalized_lens or profile_id
+        if focal_length_mm is not None:
+            profile_id = f"{profile_id}@{int(round(focal_length_mm))}mm-mf"
+
+        return FocusCalibrationResult(
+            profile_id=profile_id,
+            camera_model=self._current_camera_model(),
+            lens_model=lens_model,
+            focal_length_mm=focal_length_mm,
+            focus_mode=self._current_focus_mode(),
+            raw_min=working_min,
+            raw_max=working_max,
+            normalized_max=10_000,
+            settle_tolerance=8,
+            safety_margin=safety_margin,
+            calibrated_at=datetime.now(UTC),
+            validation_source="operator",
+            notes=(
+                f"endpoint settle low={settled_low} high={settled_high} restored={restored}"
+            ),
+        )
 
     def disconnect(self) -> None:
         """Disconnect the camera backend."""

@@ -21,11 +21,39 @@ class EquipmentProfileHardwareMount(BaseModel):
     serial_number: str | None = None
 
 
+class FujiFocusCalibrationProfile(BaseModel):
+    """Persisted Fuji focus calibration for one body+lens+posture combination."""
+
+    schema_version: int = 1
+    profile_id: str
+    camera_model: str | None = None
+    lens_model: str | None = None
+    focal_length_mm: float | None = None
+    focus_mode: str | None = None
+    raw_min: int
+    raw_max: int
+    normalized_max: int = 10_000
+    settle_tolerance: int = 8
+    safety_margin: int = 32
+    calibrated_at: datetime
+    validation_source: str = "operator"
+    notes: str = ""
+
+
+class EquipmentProfileFocusCalibration(BaseModel):
+    """Collection of persisted focus calibration profiles for the active camera."""
+
+    schema_version: int = 1
+    active_profile_id: str | None = None
+    profiles: dict[str, FujiFocusCalibrationProfile] = Field(default_factory=dict)
+
+
 class EquipmentProfileHardwareCamera(BaseModel):
     make: str | None = None
     model: str | None = None
     usb_power_supply_mode: str = "off"
     verification_shutter_mode: str = "electronic_preferred"
+    fuji_focus_calibration: EquipmentProfileFocusCalibration | None = None
 
 
 class EquipmentProfileHardwareLens(BaseModel):

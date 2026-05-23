@@ -364,6 +364,41 @@ def test_kepler_fuji_patch_bundle_uses_settled_d171_readback_as_move_truth() -> 
     assert 'FocusAbsPosN[0].value = fujiRawToAbsoluteTicks(settledMedian);' in content, (
         "the tracked Kepler Fuji DSLR patchset must publish the settled d171 median readback as the absolute focuser state"
     )
+    assert 'FocusMaxPosN[0].value = FocusAbsPosN[0].max;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must publish a bounded absolute working window instead of a fake full-range max"
+    )
+    assert 'loadFujiFocusCalibration()' in content, (
+        "the tracked Kepler Fuji DSLR patchset must load the projected Kepler focus calibration on connect before publishing bounds"
+    )
+
+
+def test_kepler_fuji_patch_bundle_clamps_ekos_absolute_moves_to_published_window() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'FocusRelPosN[0].max   = 4096;' in content, (
+        "the tracked Kepler Fuji DSLR patchset must advertise a bounded relative move span instead of the full virtual axis"
+    )
+    assert 'if (targetTicks < publishedMinTicks || targetTicks > publishedMaxTicks)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must clamp Ekos absolute requests to the published Fuji working window"
+    )
+    assert 'Clamping Fuji absolute focus target from %u to %u within published range [%u, %u]' in content, (
+        "the tracked Kepler Fuji DSLR patchset must log when an autofocus client asks for an absurd out-of-window move"
+    )
+
+
+def test_kepler_fuji_patch_bundle_reads_projected_runtime_calibration_file() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'KEPLER_FUJI_FOCUS_CALIBRATION_FILE' in content, (
+        "the tracked Kepler Fuji DSLR patchset must allow the projected calibration file path to be overridden by environment"
+    )
+    assert 'return "data/runtime/fuji_focus_calibration.json";' in content, (
+        "the tracked Kepler Fuji DSLR patchset must default to Kepler's runtime calibration projection path"
+    )
+    assert 'Loaded Kepler Fuji focus calibration from %s' in content, (
+        "the tracked Kepler Fuji DSLR patchset must log when a projected focus calibration profile is loaded"
+    )
+    assert 'm_HaveFujiFocusCalibration && m_FujiFocusCalMaxRaw > m_FujiFocusCalMinRaw' in content, (
+        "the tracked Kepler Fuji DSLR patchset must map between Fuji raw values and normalized absolute ticks only when calibration is valid"
+    )
 
 
 def test_kepler_fuji_patch_bundle_does_not_advertise_sync_for_virtual_d171_axis() -> None:

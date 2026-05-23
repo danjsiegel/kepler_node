@@ -13,6 +13,7 @@ class WorkflowIntent(StrEnum):
     """High-level workflow intent that drives state transitions."""
 
     CALIBRATION = "calibration"
+    FOCUS_CALIBRATION = "focus_calibration"
     TARGET_CENTERING = "target_centering"
     RECOVERY_VERIFICATION = "recovery_verification"
     CAPTURE = "capture"
@@ -182,6 +183,13 @@ class RuntimeSession(BaseModel):
 
         self.state = ClawState.CALIBRATE
         self.workflow_intent = WorkflowIntent.CALIBRATION
+        self.control_locked = True
+
+    def enter_focus_calibrate(self) -> None:
+        """Enter focus calibration flow and claim the control lock."""
+
+        self.state = ClawState.CALIBRATE
+        self.workflow_intent = WorkflowIntent.FOCUS_CALIBRATION
         self.control_locked = True
 
     def enter_target_acquired(self) -> None:
