@@ -217,6 +217,7 @@ def test_calibrate_focus_range_uses_empirical_probe_targets() -> None:
     assert set_calls == [-10000, 11000, -391]
     assert result.raw_min == -391
     assert result.raw_max == 10737
+    assert result.normalized_max == 11128
 
 
 # ---------------------------------------------------------------------------

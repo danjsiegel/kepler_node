@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Iterable, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from kepler_node.agent.interfaces import DeviceActivityEvent
 
@@ -63,6 +63,14 @@ class FocusCalibrationResult(BaseModel):
     calibrated_at: datetime = Field(default_factory=datetime.utcnow)
     validation_source: str = "operator"
     notes: str = ""
+
+    @model_validator(mode="after")
+    def _derive_normalized_max(self) -> FocusCalibrationResult:
+        span = self.raw_max - self.raw_min
+        if span <= 0:
+            raise ValueError("raw_max must be greater than raw_min")
+        self.normalized_max = span
+        return self
 
 
 class CameraBackend(Protocol):

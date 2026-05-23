@@ -741,7 +741,7 @@ class Gphoto2CameraBackend:
             focus_mode=self._current_focus_mode(),
             raw_min=working_min,
             raw_max=working_max,
-            normalized_max=10_000,
+            normalized_max=working_max - working_min,
             settle_tolerance=8,
             safety_margin=safety_margin,
             calibrated_at=datetime.now(UTC),

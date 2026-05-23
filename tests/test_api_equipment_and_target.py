@@ -301,7 +301,7 @@ def test_api_post_and_get_equipment_profile_preserves_fuji_focus_calibration(
     stored = calibration["profiles"]["xf55-200@55mm-mf"]
     assert stored["raw_min"] == -428
     assert stored["raw_max"] == 10442
-    assert stored["normalized_max"] == 10000
+    assert stored["normalized_max"] == 10870
 
 
 def test_api_put_equipment_profile_updates_fuji_focus_calibration(tmp_path: Path) -> None:

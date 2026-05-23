@@ -195,19 +195,19 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 -    FI::SetCapability(FOCUSER_CAN_REL_MOVE);
 +    if (useKeplerFujiDefaults)
 +    {
-+        FI::SetCapability(FOCUSER_CAN_ABS_MOVE | FOCUSER_CAN_REL_MOVE);
-+        FocusAbsPosN[0].min   = 28672;
-+        FocusAbsPosN[0].max   = 36864;
++        FI::SetCapability(FOCUSER_CAN_ABS_MOVE);
++        FocusAbsPosN[0].min   = 0;
++        FocusAbsPosN[0].max   = 4096;
 +        FocusAbsPosN[0].step  = 1;
-+        FocusAbsPosN[0].value = 32768;
++        FocusAbsPosN[0].value = 0;
 +        FocusRelPosN[0].min   = 1;
 +        FocusRelPosN[0].max   = 4096;
 +        FocusRelPosN[0].step  = 1;
 +        FocusRelPosN[0].value = 100;
 +        FocusMaxPosN[0].min   = 1;
-+        FocusMaxPosN[0].max   = 65535;
++        FocusMaxPosN[0].max   = 4096;
 +        FocusMaxPosN[0].step  = 1;
-+        FocusMaxPosN[0].value = 36864;
++        FocusMaxPosN[0].value = 4096;
 +    }
 +    else
 +        FI::SetCapability(FOCUSER_CAN_REL_MOVE);
@@ -397,7 +397,7 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
      ISwitch * one_sw = sw;
  
      char sw_name[MAXINDINAME];
-@@ -1710,8 +1879,342 @@ bool GPhotoCCD::SetFocuserSpeed(int speed)
+@@ -1710,8 +1879,336 @@ bool GPhotoCCD::SetFocuserSpeed(int speed)
  }
  #endif
  
@@ -423,22 +423,20 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +        return true;
 +    };
 +
-+    int normalizedMax = 0;
 +    if (!extractInt("raw_min", m_FujiFocusCalMinRaw) ||
-+        !extractInt("raw_max", m_FujiFocusCalMaxRaw) ||
-+        !extractInt("normalized_max", normalizedMax))
++        !extractInt("raw_max", m_FujiFocusCalMaxRaw))
 +    {
 +        LOGF_WARN("Kepler Fuji focus calibration file %s is missing required fields", runtimePath);
 +        return false;
 +    }
 +
-+    if (m_FujiFocusCalMaxRaw <= m_FujiFocusCalMinRaw || normalizedMax <= 0)
++    if (m_FujiFocusCalMaxRaw <= m_FujiFocusCalMinRaw)
 +    {
 +        LOGF_WARN("Kepler Fuji focus calibration file %s contains an invalid range", runtimePath);
 +        return false;
 +    }
 +
-+    m_FujiFocusNormalizedMax = static_cast<uint32_t>(normalizedMax);
++    m_FujiFocusNormalizedMax = static_cast<uint32_t>(m_FujiFocusCalMaxRaw - m_FujiFocusCalMinRaw);
 +    m_HaveFujiFocusCalibration = true;
 +    LOGF_INFO("Loaded Kepler Fuji focus calibration from %s", runtimePath);
 +    return true;
@@ -527,7 +525,7 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +
 +    m_FujiFocusCalMinRaw = rawFloor + safetyMargin;
 +    m_FujiFocusCalMaxRaw = rawCeiling - safetyMargin;
-+    m_FujiFocusNormalizedMax = 10000;
++    m_FujiFocusNormalizedMax = static_cast<uint32_t>(m_FujiFocusCalMaxRaw - m_FujiFocusCalMinRaw);
 +    m_HaveFujiFocusCalibration = true;
 +
 +    const int32_t restoreTarget = std::min(std::max(currentRaw, m_FujiFocusCalMinRaw), m_FujiFocusCalMaxRaw);
@@ -585,10 +583,8 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +        FocusAbsPosN[0].min = 0;
 +        FocusAbsPosN[0].max = m_FujiFocusNormalizedMax;
 +        FocusAbsPosN[0].value = fujiRawToAbsoluteTicks(rawPosition);
++        FocusMaxPosN[0].max = m_FujiFocusNormalizedMax;
 +        FocusMaxPosN[0].value = FocusAbsPosN[0].max;
-+        FocusRelPosN[0].max = FocusAbsPosN[0].max;
-+        if (FocusRelPosN[0].value > FocusRelPosN[0].max)
-+            FocusRelPosN[0].value = FocusRelPosN[0].max;
 +        return true;
 +    }
 +    const int32_t publishedMinRaw = std::max(rawPosition - 4096, -FUJI_D171_ABS_BIAS);
@@ -596,10 +592,8 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +                                             static_cast<int32_t>(FUJI_D171_ABS_MAX) - FUJI_D171_ABS_BIAS);
 +    FocusAbsPosN[0].min = fujiRawToAbsoluteTicks(publishedMinRaw);
 +    FocusAbsPosN[0].max = fujiRawToAbsoluteTicks(publishedMaxRaw);
++    FocusMaxPosN[0].max = FocusAbsPosN[0].max;
 +    FocusMaxPosN[0].value = FocusAbsPosN[0].max;
-+    FocusRelPosN[0].max = FocusAbsPosN[0].max - FocusAbsPosN[0].min;
-+    if (FocusRelPosN[0].value > FocusRelPosN[0].max)
-+        FocusRelPosN[0].value = FocusRelPosN[0].max;
 +    return true;
 +}
 +
@@ -776,7 +770,7 @@ index 2fc2c97dd3c28bac066bdd915ab0b1f9712f52eb..5da91f482fbc4306e93ca7ce3a86a347
 +        int32_t m_FujiFocusMaxRaw { 0 };
 +        int32_t m_FujiFocusCalMinRaw { 0 };
 +        int32_t m_FujiFocusCalMaxRaw { 0 };
-+        uint32_t m_FujiFocusNormalizedMax { 10000 };
++        uint32_t m_FujiFocusNormalizedMax { 1 };
  
          int liveVideoWidth  {-1};
          int liveVideoHeight {-1};

@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from kepler_node.agent.session import ClawState, TerminalOutcome, WorkflowIntent
 
@@ -38,6 +38,14 @@ class FujiFocusCalibrationProfile(BaseModel):
     calibrated_at: datetime
     validation_source: str = "operator"
     notes: str = ""
+
+    @model_validator(mode="after")
+    def _derive_normalized_max(self) -> FujiFocusCalibrationProfile:
+        span = self.raw_max - self.raw_min
+        if span <= 0:
+            raise ValueError("raw_max must be greater than raw_min")
+        self.normalized_max = span
+        return self
 
 
 class EquipmentProfileFocusCalibration(BaseModel):
