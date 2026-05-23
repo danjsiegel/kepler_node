@@ -1210,7 +1210,7 @@ class ClawController:
             )
 
         diagnostic_status = getattr(self.camera, "diagnostic_status", None)
-        if callable(diagnostic_status):
+        if not self._broker_owns_camera_path() and callable(diagnostic_status):
             try:
                 camera_diag = diagnostic_status()
             except Exception as exc:

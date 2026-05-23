@@ -401,6 +401,22 @@ def test_kepler_fuji_patch_bundle_reads_projected_runtime_calibration_file() -> 
     )
 
 
+def test_kepler_fuji_patch_bundle_probes_focus_endpoints_on_connect_when_runtime_calibration_missing() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    assert 'bool GPhotoCCD::probeFujiFocusCalibration()' in content, (
+        "the tracked Kepler Fuji DSLR patchset must define a broker-side Fuji endpoint probe when no projected calibration exists"
+    )
+    assert 'if (!m_HaveFujiFocusCalibration && !m_HaveFujiFocusState)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must only probe Fuji endpoints on the initial connect-time focus refresh when calibration is missing"
+    )
+    assert 'probeFujiFocusCalibration();' in content, (
+        "the tracked Kepler Fuji DSLR patchset must trigger the Fuji endpoint probe during connect-time focus refresh when runtime calibration is absent"
+    )
+    assert 'Probed Fuji focus calibration range [%d, %d] from settled endpoints [%d, %d]' in content, (
+        "the tracked Kepler Fuji DSLR patchset must log the probed Fuji working window discovered during broker-owned connect"
+    )
+
+
 def test_kepler_fuji_patch_bundle_does_not_advertise_sync_for_virtual_d171_axis() -> None:
     content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
     assert 'FI::SetCapability(FOCUSER_CAN_ABS_MOVE | FOCUSER_CAN_REL_MOVE);' in content, (

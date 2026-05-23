@@ -154,16 +154,19 @@ class FakeCameraBackend:
         connect_error_msg: str = "camera connect failed",
         fail_capture: bool = False,
         fail_capture_msg: str = "capture failed",
+        diagnostic_status: dict[str, Any] | None = None,
     ) -> None:
         self._capture_path = capture_path
         self._fail_connect = fail_connect
         self._connect_error_msg = connect_error_msg
         self._fail_capture = fail_capture
         self._fail_capture_msg = fail_capture_msg
+        self._diagnostic_status = diagnostic_status
         self._events: list[DeviceActivityEvent] = []
         self.disconnected = False
         self.connect_calls = 0
         self.disconnect_calls = 0
+        self.diagnostic_calls = 0
 
     def connect(self) -> None:
         self.connect_calls += 1
@@ -176,6 +179,10 @@ class FakeCameraBackend:
 
     def heartbeat(self) -> bool:
         return True
+
+    def diagnostic_status(self) -> dict[str, Any] | None:
+        self.diagnostic_calls += 1
+        return self._diagnostic_status
 
     def capture(self, request: CaptureRequest) -> CaptureResult:
         if self._fail_capture:
@@ -592,6 +599,23 @@ def test_check_readiness_power_unhealthy_produces_blocker(tmp_path: Path) -> Non
 def test_check_readiness_all_clear_returns_empty(tmp_path: Path) -> None:
     ctrl = _make_controller(tmp_path=tmp_path)
     assert ctrl.check_readiness() == []
+
+
+def test_check_readiness_skips_direct_camera_probe_when_broker_owns_path(tmp_path: Path) -> None:
+    camera = FakeCameraBackend(
+        diagnostic_status={
+            "status": "card_reader_mode",
+            "connected": True,
+            "ready": False,
+            "summary": "Camera is detected but only exposing status/card-reader controls",
+        }
+    )
+    ctrl = _make_controller(camera=camera, broker=_RestartableBroker(), tmp_path=tmp_path)
+
+    blockers = ctrl.check_readiness()
+
+    assert camera.diagnostic_calls == 0
+    assert all(b.name != "camera_remote_mode_required" for b in blockers)
 
 
 # ------------------------------------------------------------------ #

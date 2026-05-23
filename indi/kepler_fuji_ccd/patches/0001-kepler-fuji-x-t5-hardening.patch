@@ -444,13 +444,119 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
 +    return true;
 +}
 +
++bool GPhotoCCD::probeFujiFocusCalibration()
++{
++    if (!is_kepler_fuji_driver() || gphotodrv == nullptr || !m_CanFocus)
++        return false;
++
++    char errMsg[MAXRBUF] = {0};
++    int32_t currentRaw = 0;
++    if (gphoto_read_focus_position(gphotodrv, &currentRaw, errMsg) != GP_OK)
++    {
++        LOGF_WARN("Unable to read Fuji d171 position before calibration probe: %s", errMsg);
++        return false;
++    }
++
++    const auto settleRawTarget = [this](int32_t requestedRaw, int32_t &settledRaw, char *settleErrMsg) -> bool
++    {
++        if (gphoto_manual_focus(gphotodrv, requestedRaw, settleErrMsg) != GP_OK)
++            return false;
++
++        int stableReads = 0;
++        int32_t settleA = 0;
++        int32_t settleB = 0;
++        int32_t settleC = 0;
++        const int maxPolls = static_cast<int>(FUJI_D171_SETTLE_TIMEOUT_MS / FUJI_D171_SETTLE_POLL_MS);
++        for (int poll = 0; poll < maxPolls; ++poll)
++        {
++            int rawPosition = 0;
++            if (gphoto_read_focus_position(gphotodrv, &rawPosition, settleErrMsg) != GP_OK)
++                return false;
++
++            settleA = settleB;
++            settleB = settleC;
++            settleC = rawPosition;
++
++            if (poll == 0)
++                stableReads = 1;
++            else if (std::abs(settleC - settleB) <= FUJI_D171_SETTLE_TOLERANCE)
++                ++stableReads;
++            else
++                stableReads = 1;
++
++            if (stableReads >= 3)
++                break;
++
++            usleep(FUJI_D171_SETTLE_POLL_MS * 1000);
++        }
++
++        if (stableReads < 3)
++        {
++            snprintf(settleErrMsg, MAXRBUF, "Fuji d171 failed to settle during calibration probe");
++            return false;
++        }
++
++        const int32_t settledLow = std::min(settleA, std::min(settleB, settleC));
++        const int32_t settledHigh = std::max(settleA, std::max(settleB, settleC));
++        settledRaw = settleA + settleB + settleC - settledLow - settledHigh;
++        return true;
++    };
++
++    int32_t settledLow = 0;
++    if (!settleRawTarget(-FUJI_D171_ABS_BIAS, settledLow, errMsg))
++    {
++        LOGF_WARN("Fuji focus calibration probe could not settle the low endpoint: %s", errMsg);
++        return false;
++    }
++
++    int32_t settledHigh = 0;
++    if (!settleRawTarget(static_cast<int32_t>(FUJI_D171_ABS_MAX) - FUJI_D171_ABS_BIAS, settledHigh, errMsg))
++    {
++        LOGF_WARN("Fuji focus calibration probe could not settle the high endpoint: %s", errMsg);
++        return false;
++    }
++
++    const int32_t rawFloor = std::min(settledLow, settledHigh);
++    const int32_t rawCeiling = std::max(settledLow, settledHigh);
++    const int32_t safetyMargin = 32;
++    if (rawCeiling <= rawFloor + (safetyMargin * 2))
++    {
++        LOGF_WARN("Fuji focus calibration probe produced no safe interior range [%d, %d]", rawFloor, rawCeiling);
++        return false;
++    }
++
++    m_FujiFocusCalMinRaw = rawFloor + safetyMargin;
++    m_FujiFocusCalMaxRaw = rawCeiling - safetyMargin;
++    m_FujiFocusNormalizedMax = 10000;
++    m_HaveFujiFocusCalibration = true;
++
++    const int32_t restoreTarget = std::min(std::max(currentRaw, m_FujiFocusCalMinRaw), m_FujiFocusCalMaxRaw);
++    int32_t restoredRaw = restoreTarget;
++    if (!settleRawTarget(restoreTarget, restoredRaw, errMsg))
++    {
++        LOGF_WARN("Fuji focus calibration probe could not restore the prior focus neighborhood: %s", errMsg);
++    }
++    else
++    {
++        m_FujiFocusRawCurrent = restoredRaw;
++    }
++
++    LOGF_INFO("Probed Fuji focus calibration range [%d, %d] from settled endpoints [%d, %d]",
++              m_FujiFocusCalMinRaw, m_FujiFocusCalMaxRaw, settledLow, settledHigh);
++    return true;
++}
++
 +bool GPhotoCCD::refreshFujiFocusState()
 +{
 +    if (!is_kepler_fuji_driver() || gphotodrv == nullptr)
 +        return false;
 +
 +    if (!m_HaveFujiFocusCalibration)
++    {
 +        loadFujiFocusCalibration();
++        if (!m_HaveFujiFocusCalibration && !m_HaveFujiFocusState)
++            probeFujiFocusCalibration();
++    }
 +
 +    int rawPosition = 0;
 +    char errMsg[MAXRBUF] = {0};
@@ -652,6 +758,7 @@ index 2fc2c97dd3c28bac066bdd915ab0b1f9712f52eb..5da91f482fbc4306e93ca7ce3a86a347
          bool m_CanFocus { false };
 +        bool refreshFujiFocusState();
 +        bool loadFujiFocusCalibration();
++        bool probeFujiFocusCalibration();
 +        uint32_t fujiRawToAbsoluteTicks(int32_t rawTicks) const;
 +        int32_t fujiAbsoluteToRawTicks(uint32_t absoluteTicks) const;
 +        static constexpr int32_t FUJI_D171_ABS_BIAS = 32768;

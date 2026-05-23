@@ -148,6 +148,10 @@ def _get_detected_devices(controller: ClawController) -> dict[str, dict[str, boo
 
 
 def _get_camera_diagnostic(controller: ClawController) -> dict[str, Any] | None:
+    broker_owns_camera_path = getattr(controller, "_broker_owns_camera_path", None)
+    if callable(broker_owns_camera_path) and broker_owns_camera_path():
+        return None
+
     diagnostic_status = getattr(controller.camera, "diagnostic_status", None)
     if not callable(diagnostic_status):
         return None

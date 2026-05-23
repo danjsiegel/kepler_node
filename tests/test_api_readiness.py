@@ -469,6 +469,27 @@ def test_readiness_blocked_when_camera_in_autocapture_mode(tmp_path: Path) -> No
     assert "camera_autocapture_mode_blocking" in names
 
 
+def test_readiness_skips_direct_camera_probe_when_broker_owns_path(tmp_path: Path) -> None:
+    camera = FakeCameraBackend(
+        diagnostic_status={
+            "status": "card_reader_mode",
+            "connected": True,
+            "ready": False,
+            "summary": "Camera is detected but only exposing status/card-reader controls",
+        }
+    )
+    ctrl = _make_controller(camera=camera, broker_backend=FakeFocusBroker(), tmp_path=tmp_path)
+
+    client = TestClient(build_app(controller=ctrl))
+    resp = client.get("/api/v1/readiness")
+    data = resp.json()
+
+    assert resp.status_code == 200
+    assert camera.diagnostic_calls == 0
+    names = [b["name"] for b in data["blockers"]]
+    assert "camera_remote_mode_required" not in names
+
+
 def test_node_status_surfaces_card_reader_mode(tmp_path: Path) -> None:
     ctrl = _make_controller(
         camera=FakeCameraBackend(
