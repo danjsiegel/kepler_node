@@ -897,7 +897,7 @@ index 081d58001a366787b00e2192782f76d8bb8e0cca..c339d0e3ec79990517adc9d6f7eccd83
          list->widget->widget = widget;
          list->widget->type   = type;
          list->widget->name   = uselabel;
-@@ -2179,6 +2315,82 @@ out:
+@@ -2179,6 +2315,83 @@ out:
      return ret;
  }
  
