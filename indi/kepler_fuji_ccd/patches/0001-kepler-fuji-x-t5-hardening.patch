@@ -906,6 +906,8 @@ index 081d58001a366787b00e2192782f76d8bb8e0cca..c339d0e3ec79990517adc9d6f7eccd83
 +    CameraWidget *widget = nullptr, *child = nullptr;
 +    CameraWidgetType type;
 +    const char *current = nullptr;
++    char *end = nullptr;
++    long parsed = 0;
 +    float numeric = 0;
 +    int ret;
 +
@@ -960,8 +962,7 @@ index 081d58001a366787b00e2192782f76d8bb8e0cca..c339d0e3ec79990517adc9d6f7eccd83
 +        goto out_focus_read;
 +    }
 +
-+    char *end = nullptr;
-+    long parsed = strtol(current, &end, 10);
++    parsed = strtol(current, &end, 10);
 +    if (end == current || (end != nullptr && *end != '\0'))
 +    {
 +        snprintf(errMsg, MAXRBUF, "non-numeric focus value: %s", current);
