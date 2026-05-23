@@ -23,13 +23,30 @@ from kepler_node.agent.broker import IndiWebManagerBrokerBackend
 from kepler_node.agent.claw import ClawController
 from kepler_node.agent.ekos import DBusEkosAdapter
 from kepler_node.agent.node_management import LocalNodeManagementBackend
-from kepler_node.agent.session import RuntimeSession
+from kepler_node.agent.session import ClawState, RuntimeSession
 from kepler_node.api.app import build_app
 from kepler_node.camera.gphoto2 import Gphoto2CameraBackend
 from kepler_node.config import Settings
 from kepler_node.imaging.astrometry import AstrometryNetSolverBackend
 from kepler_node.mount.indi import INDIMountBackend
 from kepler_node.storage.filesystem import FilesystemSessionStore
+
+
+def _initialize_controller_for_api(controller: ClawController) -> ClawController:
+    """Advance the pre-session lifecycle for the served API instance.
+
+    The API should not come up stranded in BOOT. On startup, advance through
+    the normal pre-session sequence until the controller reaches a stable
+    externally visible state such as READY or PAUSED.
+    """
+
+    if controller.session.state == ClawState.BOOT:
+        controller.boot()
+    if controller.session.state == ClawState.DISCOVER:
+        controller.discover()
+    if controller.session.state == ClawState.CONNECT:
+        controller.connect()
+    return controller
 
 
 def make_dev_app() -> FastAPI:
@@ -64,5 +81,7 @@ def make_dev_app() -> FastAPI:
             timeout_seconds=settings.indiwebmanager_timeout_seconds,
         ),
     )
+
+    _initialize_controller_for_api(controller)
 
     return build_app(controller=controller, ekos_output_dir=settings.ekos_output_dir)
