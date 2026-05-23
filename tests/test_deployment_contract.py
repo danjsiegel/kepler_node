@@ -6,6 +6,49 @@ import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).parent.parent
+_PATCH_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _assert_patch_hunk_counts(content: str) -> None:
+    lines = content.splitlines()
+    saw_hunk = False
+    idx = 0
+    while idx < len(lines):
+        match = _PATCH_HUNK_RE.match(lines[idx])
+        if not match:
+            idx += 1
+            continue
+
+        saw_hunk = True
+        expected_old = int(match.group(2) or "1")
+        expected_new = int(match.group(4) or "1")
+        actual_old = 0
+        actual_new = 0
+        idx += 1
+
+        while idx < len(lines):
+            line = lines[idx]
+            if line.startswith("@@ ") or line.startswith("diff --git "):
+                break
+            if line == r"\ No newline at end of file":
+                idx += 1
+                continue
+            if not line.startswith("+"):
+                actual_old += 1
+            if not line.startswith("-"):
+                actual_new += 1
+            idx += 1
+
+        assert actual_old == expected_old, (
+            f"patch hunk old-count mismatch for {match.group(0)}: "
+            f"expected {expected_old}, found {actual_old}"
+        )
+        assert actual_new == expected_new, (
+            f"patch hunk new-count mismatch for {match.group(0)}: "
+            f"expected {expected_new}, found {actual_new}"
+        )
+
+    assert saw_hunk, "expected at least one unified-diff hunk in the Fuji patch bundle"
 
 
 def test_upgrade_sh_writes_in_progress_before_health_checks() -> None:
@@ -415,6 +458,11 @@ def test_kepler_fuji_patch_bundle_probes_focus_endpoints_on_connect_when_runtime
     assert 'Probed Fuji focus calibration range [%d, %d] from settled endpoints [%d, %d]' in content, (
         "the tracked Kepler Fuji DSLR patchset must log the probed Fuji working window discovered during broker-owned connect"
     )
+
+
+def test_kepler_fuji_patch_bundle_has_consistent_hunk_counts() -> None:
+    content = (_REPO_ROOT / "indi" / "kepler_fuji_ccd" / "patches" / "0001-kepler-fuji-x-t5-hardening.patch").read_text()
+    _assert_patch_hunk_counts(content)
 
 
 def test_kepler_fuji_patch_bundle_does_not_advertise_sync_for_virtual_d171_axis() -> None:

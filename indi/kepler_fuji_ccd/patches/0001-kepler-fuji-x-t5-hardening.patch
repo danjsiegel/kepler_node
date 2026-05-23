@@ -397,7 +397,7 @@ index a8ba5998e227967dfecd4a7e263fe995db6aecf1..21eaaedc85c5c8a3d9d0a64b15b1541a
      ISwitch * one_sw = sw;
  
      char sw_name[MAXINDINAME];
-@@ -1710,8 +1879,236 @@ bool GPhotoCCD::SetFocuserSpeed(int speed)
+@@ -1710,8 +1879,342 @@ bool GPhotoCCD::SetFocuserSpeed(int speed)
  }
  #endif
  
@@ -752,7 +752,7 @@ index 2fc2c97dd3c28bac066bdd915ab0b1f9712f52eb..5da91f482fbc4306e93ca7ce3a86a347
  
          // Streaming
          bool StartStreaming() override;
-@@ -168,7 +169,26 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
+@@ -168,7 +169,27 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
  
          // Focus
          bool m_CanFocus { false };
