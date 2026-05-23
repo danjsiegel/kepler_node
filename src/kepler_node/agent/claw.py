@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -201,6 +202,9 @@ class ClawController:
         # Used by confirm_ekos_paused() to enforce the "activity settled" check before
         # opening the intervention window (spec §Control Handoff Protocol, line 398).
         self._last_significant_activity_at: datetime | None = None
+        # Serialize direct gphoto2 camera operations that may be invoked from
+        # request handlers and background loops concurrently.
+        self._camera_io_lock = threading.RLock()
         # Active equipment profile set by discover() or /equipment/profiles/{id}/select
         self.active_equipment_profile: EquipmentProfile | None = None
         # Staged target metadata (label and source tracked separately from session RA/Dec)
@@ -396,37 +400,40 @@ class ClawController:
         if not isinstance(self.camera, FocusCalibrationCapable):
             raise RuntimeError("camera backend does not support focus calibration")
 
-        self.session.enter_focus_calibrate()
-        self._make_transition(ClawState.READY, ClawState.CALIBRATE, "starting focus calibration")
+        with self._camera_io_lock:
+            self.session.enter_focus_calibrate()
+            self._make_transition(
+                ClawState.READY, ClawState.CALIBRATE, "starting focus calibration"
+            )
 
-        stopped_profile: str | None = None
-        try:
-            stopped_profile = self.broker.stop_active_profile()
-            self.camera.connect()
-            result = self.camera.calibrate_focus_range()
-            self._persist_focus_calibration_result(result)
-        except Exception as exc:
+            stopped_profile: str | None = None
             try:
-                self.camera.disconnect()
-            except Exception:
-                pass
-            restart_error = None
-            if stopped_profile is not None:
+                stopped_profile = self.broker.stop_active_profile()
+                self.camera.connect()
+                result = self.camera.calibrate_focus_range()
+                self._persist_focus_calibration_result(result)
+            except Exception as exc:
                 try:
-                    self.broker.start_profile(stopped_profile)
-                except Exception as broker_exc:
-                    restart_error = str(broker_exc)
-            self.session.state = ClawState.READY
-            self.session.workflow_intent = None
-            self.session.control_locked = False
-            detail = f"focus calibration failed: {exc}"
-            if restart_error:
-                detail = f"{detail}; broker restart also failed: {restart_error}"
-            raise RuntimeError(detail) from exc
+                    self.camera.disconnect()
+                except Exception:
+                    pass
+                restart_error = None
+                if stopped_profile is not None:
+                    try:
+                        self.broker.start_profile(stopped_profile)
+                    except Exception as broker_exc:
+                        restart_error = str(broker_exc)
+                self.session.state = ClawState.READY
+                self.session.workflow_intent = None
+                self.session.control_locked = False
+                detail = f"focus calibration failed: {exc}"
+                if restart_error:
+                    detail = f"{detail}; broker restart also failed: {restart_error}"
+                raise RuntimeError(detail) from exc
 
-        self.camera.disconnect()
-        if stopped_profile is not None:
-            self.broker.start_profile(stopped_profile)
+            self.camera.disconnect()
+            if stopped_profile is not None:
+                self.broker.start_profile(stopped_profile)
 
         self.session.state = ClawState.READY
         self.session.workflow_intent = None
@@ -513,6 +520,24 @@ class ClawController:
             broker_state=broker_state,
             intervention_window=iw,
             control_locked=control_locked,
+        )
+
+    def _broker_owns_camera_path(self) -> bool:
+        """Return True when the shared INDI camera path is broker-owned.
+
+        In the v1.1 broker posture, direct gphoto2 control must yield while an
+        active broker profile owns the INDI device path.
+        """
+        try:
+            broker_snap: BrokerSnapshot = self.broker.snapshot()
+        except Exception:
+            return False
+
+        return (
+            not broker_snap.is_stale
+            and broker_snap.broker_state == BrokerRuntimeState.READY
+            and broker_snap.device_path_available
+            and broker_snap.profile_active is not None
         )
 
     # ------------------------------------------------------------------ #
@@ -667,33 +692,43 @@ class ClawController:
             )
 
         # Connect camera
-        try:
-            self.camera.connect()
-        except RuntimeError as exc:
-            msg = str(exc)
-            if "camera_autocapture_mode_blocking" in msg:
-                blockers.append(
-                    ReadinessCondition(
-                        name="camera_autocapture_mode_blocking",
-                        severity="blocking",
-                        summary=msg,
-                        operator_action_required=(
-                            "Set Drive Dial to S (Single Shot), keep USB tether mode enabled, and replug USB if needed"
-                        ),
+        if not self._broker_owns_camera_path():
+            try:
+                self.camera.connect()
+            except RuntimeError as exc:
+                msg = str(exc)
+                if "camera_autocapture_mode_blocking" in msg:
+                    blockers.append(
+                        ReadinessCondition(
+                            name="camera_autocapture_mode_blocking",
+                            severity="blocking",
+                            summary=msg,
+                            operator_action_required=(
+                                "Set Drive Dial to S (Single Shot), keep USB tether mode enabled, and replug USB if needed"
+                            ),
+                        )
                     )
-                )
-            elif "camera_remote_mode_required" in msg or "remote" in msg.lower():
-                blockers.append(
-                    ReadinessCondition(
-                        name="camera_remote_mode_required",
-                        severity="blocking",
-                        summary=msg,
-                        operator_action_required=(
-                            "Switch camera to USB remote-control mode and retry connect"
-                        ),
+                elif "camera_remote_mode_required" in msg or "remote" in msg.lower():
+                    blockers.append(
+                        ReadinessCondition(
+                            name="camera_remote_mode_required",
+                            severity="blocking",
+                            summary=msg,
+                            operator_action_required=(
+                                "Switch camera to USB remote-control mode and retry connect"
+                            ),
+                        )
                     )
-                )
-            else:
+                else:
+                    blockers.append(
+                        ReadinessCondition(
+                            name="camera_connect_failed",
+                            severity="blocking",
+                            summary=f"Camera connection failed: {exc}",
+                            operator_action_required="Check camera USB connection and retry",
+                        )
+                    )
+            except Exception as exc:
                 blockers.append(
                     ReadinessCondition(
                         name="camera_connect_failed",
@@ -702,15 +737,6 @@ class ClawController:
                         operator_action_required="Check camera USB connection and retry",
                     )
                 )
-        except Exception as exc:
-            blockers.append(
-                ReadinessCondition(
-                    name="camera_connect_failed",
-                    severity="blocking",
-                    summary=f"Camera connection failed: {exc}",
-                    operator_action_required="Check camera USB connection and retry",
-                )
-            )
 
         if blockers:
             self.session.pause(
@@ -752,6 +778,13 @@ class ClawController:
         if prev not in _CAMERA_KEEPALIVE_STATES:
             return self._make_transition(prev, prev, "camera keepalive skipped: state not idle")
 
+        if self._broker_owns_camera_path():
+            return self._make_transition(
+                prev,
+                prev,
+                "camera keepalive skipped: broker owns camera path",
+            )
+
         # Skip if Ekos reports an active or in-progress exposure.  A paused sequence
         # with exposure_active=True means a frame is still being captured on the
         # normal INDI path; a gphoto2 heartbeat would race with that exposure.
@@ -764,49 +797,50 @@ class ClawController:
         except Exception:
             pass  # If we can't query Ekos, proceed with the heartbeat.
 
-        if self.camera.heartbeat():
-            return self._make_transition(prev, prev, "camera keepalive ok")
+        with self._camera_io_lock:
+            if self.camera.heartbeat():
+                return self._make_transition(prev, prev, "camera keepalive ok")
 
-        # Heartbeat failed — camera may have auto-powered off.  Attempt reconnect.
-        self._emit_event(
-            EventType.RECOVERY_ATTEMPT,
-            "camera keepalive: heartbeat failed, attempting reconnect",
-            EventSeverity.WARNING,
-        )
-        try:
-            self.camera.connect()
+            # Heartbeat failed — camera may have auto-powered off.  Attempt reconnect.
             self._emit_event(
                 EventType.RECOVERY_ATTEMPT,
-                "camera keepalive: reconnected after heartbeat failure",
+                "camera keepalive: heartbeat failed, attempting reconnect",
                 EventSeverity.WARNING,
             )
-            return self._make_transition(
-                prev, prev, "camera keepalive: reconnected after heartbeat failure"
-            )
-        except Exception as exc:
-            blocker = ReadinessCondition(
-                name="camera_disconnected",
-                severity="blocking",
-                summary=f"Camera heartbeat failed and reconnect failed: {exc}",
-                operator_action_required=("Check USB connection, power on camera, and resume"),
-            )
-            self.session.pause(
-                pause_reason="camera_keepalive_reconnect_failed",
-                resume_state=prev,
-                workflow_intent=self.session.workflow_intent or WorkflowIntent.CALIBRATION,
-                operator_action_required=blocker.operator_action_required,
-            )
-            self._emit_event(
-                EventType.OPERATOR_ACTION_REQUIRED,
-                f"camera keepalive: reconnect failed ({exc})",
-                EventSeverity.ERROR,
-                details={"error": str(exc)},
-            )
-            result = self._make_transition(
-                prev, ClawState.PAUSED, f"camera disconnected: reconnect failed ({exc})"
-            )
-            result.blockers = [blocker]
-            return result
+            try:
+                self.camera.connect()
+                self._emit_event(
+                    EventType.RECOVERY_ATTEMPT,
+                    "camera keepalive: reconnected after heartbeat failure",
+                    EventSeverity.WARNING,
+                )
+                return self._make_transition(
+                    prev, prev, "camera keepalive: reconnected after heartbeat failure"
+                )
+            except Exception as exc:
+                blocker = ReadinessCondition(
+                    name="camera_disconnected",
+                    severity="blocking",
+                    summary=f"Camera heartbeat failed and reconnect failed: {exc}",
+                    operator_action_required=("Check USB connection, power on camera, and resume"),
+                )
+                self.session.pause(
+                    pause_reason="camera_keepalive_reconnect_failed",
+                    resume_state=prev,
+                    workflow_intent=self.session.workflow_intent or WorkflowIntent.CALIBRATION,
+                    operator_action_required=blocker.operator_action_required,
+                )
+                self._emit_event(
+                    EventType.OPERATOR_ACTION_REQUIRED,
+                    f"camera keepalive: reconnect failed ({exc})",
+                    EventSeverity.ERROR,
+                    details={"error": str(exc)},
+                )
+                result = self._make_transition(
+                    prev, ClawState.PAUSED, f"camera disconnected: reconnect failed ({exc})"
+                )
+                result.blockers = [blocker]
+                return result
 
     def recover_camera_session(self, *, reason: str = "manual camera recovery") -> TransitionResult:
         """Run a bounded manual camera-session recovery sequence."""
@@ -844,31 +878,32 @@ class ClawController:
         recovery_helper = getattr(self.camera, "recover_stuck_camera_files", None)
         recovery_dir = self.store.data_root / "recovered-camera"
 
-        try:
-            stopped_profile = self.broker.stop_active_profile()
+        with self._camera_io_lock:
+            try:
+                stopped_profile = self.broker.stop_active_profile()
+                if stopped_profile:
+                    details["restart_used"] = True
+                    details["restarted_profile"] = stopped_profile
+            except Exception as exc:
+                details["broker_stop_error"] = str(exc)
+
+            if stopped_profile and callable(recovery_helper):
+                try:
+                    recovered_files = recovery_helper(recovery_dir)
+                    details["recovered_files"] = [str(path) for path in recovered_files]
+                except Exception as exc:
+                    details["camera_recovery_error"] = str(exc)
+
             if stopped_profile:
-                details["restart_used"] = True
-                details["restarted_profile"] = stopped_profile
-        except Exception as exc:
-            details["broker_stop_error"] = str(exc)
+                try:
+                    self.broker.start_profile(stopped_profile)
+                except Exception as exc:
+                    details["broker_start_error"] = str(exc)
 
-        if stopped_profile and callable(recovery_helper):
             try:
-                recovered_files = recovery_helper(recovery_dir)
-                details["recovered_files"] = [str(path) for path in recovered_files]
+                self.camera.disconnect()
             except Exception as exc:
-                details["camera_recovery_error"] = str(exc)
-
-        if stopped_profile:
-            try:
-                self.broker.start_profile(stopped_profile)
-            except Exception as exc:
-                details["broker_start_error"] = str(exc)
-
-        try:
-            self.camera.disconnect()
-        except Exception as exc:
-            details["camera_disconnect_error"] = str(exc)
+                details["camera_disconnect_error"] = str(exc)
 
         recovery_error = next(
             (
@@ -880,7 +915,8 @@ class ClawController:
         )
 
         try:
-            self.camera.connect()
+            with self._camera_io_lock:
+                self.camera.connect()
         except Exception as exc:
             blocker_details = {
                 key: str(value) for key, value in details.items() if value is not None

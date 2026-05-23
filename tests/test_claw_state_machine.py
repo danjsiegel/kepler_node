@@ -551,6 +551,18 @@ def test_connect_resets_reconnect_counter_on_success(tmp_path: Path) -> None:
     assert ctrl.session.reconnect_attempts == 0
 
 
+def test_connect_skips_direct_camera_connect_when_broker_owns_path(tmp_path: Path) -> None:
+    camera = FakeCameraBackend(fail_connect=True)
+    ctrl = _make_controller(camera=camera, broker=_RestartableBroker(), tmp_path=tmp_path)
+    ctrl.session.state = ClawState.CONNECT
+
+    result = ctrl.connect()
+
+    assert result.next_state == ClawState.READY
+    assert ctrl.session.state == ClawState.READY
+    assert camera.connect_calls == 0
+
+
 # ------------------------------------------------------------------ #
 # check_readiness                                                      #
 # ------------------------------------------------------------------ #
@@ -2172,9 +2184,11 @@ class _HeartbeatCamera(FakeCameraBackend):
         super().__init__()
         self._heartbeat_ok = heartbeat_ok
         self._reconnect_ok = reconnect_ok
+        self.heartbeat_calls = 0
         self.connect_calls = 0
 
     def heartbeat(self) -> bool:
+        self.heartbeat_calls += 1
         return self._heartbeat_ok
 
     def connect(self) -> None:
@@ -2290,6 +2304,19 @@ def test_camera_keepalive_allowed_in_paused_and_target_acquired(tmp_path: Path) 
 
         assert result.next_state == state, f"expected to stay in {state}"
         assert "ok" in result.message
+
+
+def test_camera_keepalive_skips_when_broker_owns_path(tmp_path: Path) -> None:
+    cam = _HeartbeatCamera(heartbeat_ok=False)
+    ctrl = _make_controller(camera=cam, broker=_RestartableBroker(), tmp_path=tmp_path)
+    ctrl.session.state = ClawState.READY
+
+    result = ctrl.camera_keepalive()
+
+    assert result.next_state == ClawState.READY
+    assert "broker owns camera path" in result.message
+    assert cam.heartbeat_calls == 0
+    assert cam.connect_calls == 0
 
 
 def test_recover_camera_session_restarts_broker_and_reconnects_camera(tmp_path: Path) -> None:

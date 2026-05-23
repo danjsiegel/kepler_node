@@ -96,6 +96,19 @@ _PRE_SESSION_STATES = {
 }
 
 
+def _is_pre_session_posture(session: RuntimeSession) -> bool:
+    """Return True when no managed session has actually started.
+
+    A paused controller with ``session_id is None`` is a pre-session pause
+    (for example connect blocked during startup), not an active managed
+    imaging session.
+    """
+
+    return session.session_id is None and (
+        session.state in _PRE_SESSION_STATES or session.state == ClawState.PAUSED
+    )
+
+
 def _to_blocker(c: ReadinessCondition) -> BlockerCondition:
     return BlockerCondition(
         name=c.name,
@@ -319,7 +332,7 @@ def _get_session_blockers(session: RuntimeSession) -> list[BlockerCondition]:
     clients that only inspect action responses still see the current
     session-level blocking condition (active session or uncleared terminal).
     """
-    if session.state in _PRE_SESSION_STATES:
+    if _is_pre_session_posture(session):
         return []
 
     if session.is_terminal:
@@ -683,7 +696,7 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
         session_blockers = _get_session_blockers(session)
         external_control_summary: dict | None = None
 
-        if session.state not in _PRE_SESSION_STATES:
+        if not _is_pre_session_posture(session):
             external_control_summary = {
                 "state": session.state,
                 "control_locked": session.control_locked,
@@ -793,7 +806,7 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
     def get_session_current() -> SessionSummaryResponse | None:
         """Full managed-session summary; null when no session is active."""
         session = controller.session
-        if session.session_id is None and session.state in _PRE_SESSION_STATES:
+        if _is_pre_session_posture(session):
             return None
 
         blockers = controller.check_readiness()
@@ -830,7 +843,7 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
     def get_session_state() -> SessionStateResponse | None:
         """Lightweight polling view; null when no session is active."""
         session = controller.session
-        if session.session_id is None and session.state in _PRE_SESSION_STATES:
+        if _is_pre_session_posture(session):
             return None
 
         blockers = controller.check_readiness()
@@ -1323,7 +1336,7 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
             if controller.active_equipment_profile
             else None
         )
-        if profile_id == active_id and controller.session.state not in _PRE_SESSION_STATES:
+        if profile_id == active_id and not _is_pre_session_posture(controller.session):
             raise HTTPException(
                 status_code=409,
                 detail="Cannot edit active profile while a managed session is in progress",
@@ -1362,7 +1375,7 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
     )
     def post_equipment_profile_select(profile_id: str) -> ActionResponse:
         """Select a profile as active.  409 during active managed session, 404 when not found."""
-        if controller.session.state not in _PRE_SESSION_STATES:
+        if not _is_pre_session_posture(controller.session):
             raise HTTPException(
                 status_code=409,
                 detail="Cannot change active profile while a managed session is in progress",

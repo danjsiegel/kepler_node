@@ -554,6 +554,31 @@ def test_api_select_nonexistent_profile_returns_404(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
+def test_api_select_equipment_profile_allowed_during_pre_session_pause(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path, state=ClawState.PAUSED)
+    payload = {
+        "profile_id": "sel-paused",
+        "display_name": "Sel Paused",
+        "hardware": {"mount": {"model": "EQ6"}, "camera": {}, "lens": {}, "gps": {}},
+        "site_defaults": {},
+        "solving_hints": {},
+        "backend_preferences": {},
+    }
+    ctrl.store.write_profile(
+        EquipmentProfile.model_validate(
+            {
+                **payload,
+                "created_at": datetime.now(UTC).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    )
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.post("/api/v1/equipment/profiles/sel-paused/select")
+    assert resp.status_code == 200
+
+
 def test_api_put_equipment_profile(tmp_path: Path) -> None:
     client = _make_api_client(tmp_path)
     payload = {

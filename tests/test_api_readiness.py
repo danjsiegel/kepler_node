@@ -855,6 +855,24 @@ def test_readiness_not_ready_during_paused_session(tmp_path: Path) -> None:
     assert "active_session" in names
 
 
+def test_readiness_pre_session_paused_does_not_report_active_session(tmp_path: Path) -> None:
+    """Startup pauses without a session_id are not active managed sessions."""
+    from kepler_node.agent.session import ClawState, RuntimeSession, WorkflowIntent
+
+    session = RuntimeSession(
+        session_id=None,
+        state=ClawState.PAUSED,
+        workflow_intent=WorkflowIntent.CALIBRATION,
+        control_locked=False,
+    )
+    ctrl = _make_controller(session=session, tmp_path=tmp_path)
+    client = TestClient(build_app(controller=ctrl))
+    data = client.get("/api/v1/readiness").json()
+    names = [b["name"] for b in data["blockers"]]
+    assert "active_session" not in names
+    assert data["external_control_summary"] is None
+
+
 def test_readiness_not_ready_when_session_completed_unacknowledged(tmp_path: Path) -> None:
     """ready is False when a session is in completed state awaiting acknowledgment."""
     from kepler_node.agent.session import ClawState, RuntimeSession, TerminalOutcome
