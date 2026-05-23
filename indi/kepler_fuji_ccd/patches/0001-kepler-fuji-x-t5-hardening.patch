@@ -639,13 +639,13 @@ index 2fc2c97dd3c28bac066bdd915ab0b1f9712f52eb..5da91f482fbc4306e93ca7ce3a86a347
 --- a/indi-gphoto/gphoto_ccd.h
 +++ b/indi-gphoto/gphoto_ccd.h
 @@ -124,6 +124,7 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
-      * Return IPS_ALERT if there is an error.
-      */
-     virtual IPState MoveRelFocuser(FocusDirection dir, uint32_t ticks) override;
+          * Return IPS_ALERT if there is an error.
+          */
+         virtual IPState MoveRelFocuser(FocusDirection dir, uint32_t ticks) override;
 +        virtual IPState MoveAbsFocuser(uint32_t targetTicks) override;
  
-      // Streaming
-      bool StartStreaming() override;
+         // Streaming
+         bool StartStreaming() override;
 @@ -168,7 +169,26 @@ class GPhotoCCD : public INDI::CCD, public INDI::FocuserInterface
  
          // Focus

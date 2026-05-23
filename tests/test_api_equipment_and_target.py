@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from kepler_node.agent.authorship import AuthorshipTracker
+from kepler_node.agent.broker import StubBrokerBackend
 from kepler_node.agent.claw import ClawController
 from kepler_node.agent.interfaces import (
     NetworkMode,
@@ -22,7 +23,12 @@ from kepler_node.agent.interfaces import (
 )
 from kepler_node.agent.session import ClawState, RuntimeSession
 from kepler_node.api.app import build_app
-from kepler_node.camera.protocols import CameraSettings, CaptureRequest, CaptureResult
+from kepler_node.camera.protocols import (
+    CameraSettings,
+    CaptureRequest,
+    CaptureResult,
+    FocusCalibrationResult,
+)
 from kepler_node.imaging.protocols import SolveResult
 from kepler_node.mount.protocols import MountPosition
 from kepler_node.storage.filesystem import FilesystemSessionStore
@@ -110,12 +116,49 @@ class FakeCameraBackend:
         return []
 
 
+class FakeFocusCalibrationCamera(FakeCameraBackend):
+    def __init__(self) -> None:
+        self.connect_calls = 0
+        self.disconnect_calls = 0
+        self.calibration_calls = 0
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+
+    def disconnect(self) -> None:
+        self.disconnect_calls += 1
+
+    def heartbeat(self) -> bool:
+        return True
+
+    def apply_settings(self, settings: CameraSettings) -> CameraSettings:
+        return settings
+
+    def calibrate_focus_range(self) -> FocusCalibrationResult:
+        self.calibration_calls += 1
+        return FocusCalibrationResult(
+            profile_id="xf55-200@55mm-mf",
+            camera_model="X-T5",
+            lens_model="XF55-200mmF3.5-4.8 R LM OIS",
+            focal_length_mm=55.0,
+            focus_mode="manual",
+            raw_min=-428,
+            raw_max=10442,
+            calibrated_at=datetime(2026, 5, 23, tzinfo=UTC),
+        )
+
+
 class FakeSolverBackend:
     def solve(self, image_path: Path, **_: object) -> SolveResult:
         return SolveResult(success=True, ra_hours=10.0, dec_deg=45.0, residual_arcmin=2.0)
 
 
-def _make_controller(tmp_path: Path, *, state: ClawState = ClawState.READY) -> ClawController:
+def _make_controller(
+    tmp_path: Path,
+    *,
+    state: ClawState = ClawState.READY,
+    camera: FakeCameraBackend | None = None,
+) -> ClawController:
     base = tmp_path
     base.mkdir(parents=True, exist_ok=True)
     vdir = base / "verify"
@@ -126,12 +169,13 @@ def _make_controller(tmp_path: Path, *, state: ClawState = ClawState.READY) -> C
         session=session,
         node_backend=FakeNodeBackend(),
         mount_backend=FakeMountBackend(),
-        camera_backend=FakeCameraBackend(),
+        camera_backend=camera or FakeCameraBackend(),
         solver_backend=FakeSolverBackend(),
         store=FilesystemSessionStore(data_root=base),
         authorship_tracker=AuthorshipTracker(),
         verification_dir=vdir,
         test_exposure_seconds=1.0,
+        broker_backend=StubBrokerBackend(),
     )
 
 
@@ -385,6 +429,84 @@ def test_api_put_active_equipment_profile_refreshes_fuji_focus_runtime_projectio
     projection = json.loads(runtime_path.read_text(encoding="utf-8"))
     assert projection["calibration"]["active_profile_id"] == "xf55-200@135mm-mf"
     assert projection["lens"]["active_focal_length_mm"] == 135.0
+
+
+def test_api_select_equipment_profile_auto_runs_fuji_focus_calibration_when_missing(
+    tmp_path: Path,
+) -> None:
+    camera = FakeFocusCalibrationCamera()
+    ctrl = _make_controller(tmp_path, camera=camera)
+    profile = _make_profile(profile_id="fuji-auto", display_name="Fuji Auto")
+    profile.hardware.camera = EquipmentProfileHardwareCamera(make="Fujifilm", model="X-T5")
+    profile.hardware.lens = EquipmentProfileHardwareLens(
+        model="XF55-200mmF3.5-4.8 R LM OIS",
+        is_zoom=True,
+        default_focal_length_mm=55.0,
+    )
+    ctrl.store.write_profile(profile)
+    client = TestClient(build_app(controller=ctrl))
+
+    resp = client.post("/api/v1/equipment/profiles/fuji-auto/select")
+    assert resp.status_code == 200
+    assert "focus calibration completed" in resp.json()["message"]
+    assert camera.calibration_calls == 1
+
+    stored = ctrl.store.read_profile("fuji-auto")
+    assert stored is not None
+    calibration = stored.hardware.camera.fuji_focus_calibration
+    assert calibration is not None
+    assert calibration.active_profile_id == "xf55-200@55mm-mf"
+
+    runtime_path = tmp_path / "runtime" / "fuji_focus_calibration.json"
+    projection = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert projection["active_calibration"]["raw_min"] == -428
+    assert projection["lens"]["active_focal_length_mm"] == 55.0
+
+
+def test_focus_projection_uses_focal_length_default_when_active_profile_missing(
+    tmp_path: Path,
+) -> None:
+    ctrl = _make_controller(tmp_path)
+    profile = _make_profile(profile_id="fuji-default-select", display_name="Fuji Default Select")
+    profile.hardware.camera = EquipmentProfileHardwareCamera(
+        make="Fujifilm",
+        model="X-T5",
+        fuji_focus_calibration=EquipmentProfileFocusCalibration(
+            active_profile_id=None,
+            profiles={
+                "xf55-200@55mm-mf": FujiFocusCalibrationProfile(
+                    profile_id="xf55-200@55mm-mf",
+                    camera_model="X-T5",
+                    lens_model="XF55-200mmF3.5-4.8 R LM OIS",
+                    focal_length_mm=55.0,
+                    focus_mode="manual",
+                    raw_min=-428,
+                    raw_max=10442,
+                    calibrated_at=datetime(2026, 5, 23, tzinfo=UTC),
+                ),
+                "xf55-200@135mm-mf": FujiFocusCalibrationProfile(
+                    profile_id="xf55-200@135mm-mf",
+                    camera_model="X-T5",
+                    lens_model="XF55-200mmF3.5-4.8 R LM OIS",
+                    focal_length_mm=135.0,
+                    focus_mode="manual",
+                    raw_min=1498,
+                    raw_max=10234,
+                    calibrated_at=datetime(2026, 5, 23, tzinfo=UTC),
+                ),
+            },
+        ),
+    )
+    profile.hardware.lens = EquipmentProfileHardwareLens(
+        model="XF55-200mmF3.5-4.8 R LM OIS",
+        is_zoom=True,
+        default_focal_length_mm=135.0,
+    )
+    ctrl.set_active_equipment_profile(profile)
+
+    runtime_path = tmp_path / "runtime" / "fuji_focus_calibration.json"
+    projection = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert projection["active_calibration"]["profile_id"] == "xf55-200@135mm-mf"
 
 
 def test_api_post_equipment_profile_duplicate_returns_409(tmp_path: Path) -> None:

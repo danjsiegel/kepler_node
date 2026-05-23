@@ -213,6 +213,46 @@ class ClawController:
         """In-memory buffer of node-scoped pre-session diagnostic events."""
         return self._node_events
 
+    @staticmethod
+    def _is_fuji_equipment_profile(profile: EquipmentProfile) -> bool:
+        make = (profile.hardware.camera.make or "").strip().lower()
+        return "fuji" in make or "fujifilm" in make
+
+    @staticmethod
+    def _active_focal_length_mm(profile: EquipmentProfile) -> float | None:
+        return (
+            profile.solving_hints.focal_length_assumption_mm
+            or profile.hardware.lens.default_focal_length_mm
+        )
+
+    def _resolve_active_focus_calibration(
+        self, profile: EquipmentProfile
+    ) -> FujiFocusCalibrationProfile | None:
+        calibration = profile.hardware.camera.fuji_focus_calibration
+        if calibration is None or not calibration.profiles:
+            return None
+
+        if calibration.active_profile_id:
+            active = calibration.profiles.get(calibration.active_profile_id)
+            if active is not None:
+                return active
+
+        active_focal_length_mm = self._active_focal_length_mm(profile)
+        if active_focal_length_mm is not None:
+            candidates = [
+                item for item in calibration.profiles.values() if item.focal_length_mm is not None
+            ]
+            if candidates:
+                return min(
+                    candidates,
+                    key=lambda item: abs(item.focal_length_mm - active_focal_length_mm),
+                )
+
+        if len(calibration.profiles) == 1:
+            return next(iter(calibration.profiles.values()))
+
+        return None
+
     @property
     def fuji_focus_calibration_runtime_path(self) -> Path:
         """Projected runtime calibration file for Fuji integrations."""
@@ -236,9 +276,7 @@ class ClawController:
                 runtime_path.unlink()
             return None
 
-        active_calibration = None
-        if calibration.active_profile_id:
-            active_calibration = calibration.profiles.get(calibration.active_profile_id)
+        active_calibration = self._resolve_active_focus_calibration(profile)
 
         runtime_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -253,10 +291,7 @@ class ClawController:
                 "model": profile.hardware.lens.model,
                 "is_zoom": profile.hardware.lens.is_zoom,
                 "default_focal_length_mm": profile.hardware.lens.default_focal_length_mm,
-                "active_focal_length_mm": (
-                    profile.solving_hints.focal_length_assumption_mm
-                    or profile.hardware.lens.default_focal_length_mm
-                ),
+                "active_focal_length_mm": self._active_focal_length_mm(profile),
             },
             "calibration": calibration.model_dump(mode="json"),
             "active_calibration": (
@@ -266,11 +301,44 @@ class ClawController:
         runtime_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         return runtime_path
 
-    def set_active_equipment_profile(self, profile: EquipmentProfile | None) -> None:
+    def ensure_focus_calibration_for_active_profile(self) -> TransitionResult | None:
+        """Auto-run Fuji focus calibration when the active profile lacks one."""
+
+        profile = self.active_equipment_profile
+        if profile is None or not self._is_fuji_equipment_profile(profile):
+            return None
+        if self._resolve_active_focus_calibration(profile) is not None:
+            return None
+        if self.session.state != ClawState.READY:
+            return None
+        if not isinstance(self.camera, FocusCalibrationCapable):
+            return None
+
+        if profile.solving_hints.focal_length_assumption_mm is None:
+            profile.solving_hints.focal_length_assumption_mm = (
+                profile.hardware.lens.default_focal_length_mm
+            )
+
+        try:
+            return self.run_focus_calibration()
+        except (RuntimeError, ValueError):
+            _logger.exception(
+                "Automatic Fuji focus calibration failed for active profile %s",
+                profile.profile_id,
+            )
+            self.refresh_focus_calibration_projection()
+            return None
+
+    def set_active_equipment_profile(
+        self, profile: EquipmentProfile | None, *, auto_focus_calibration: bool = False
+    ) -> TransitionResult | None:
         """Set the active profile and refresh the projected focus calibration."""
 
         self.active_equipment_profile = profile
         self.refresh_focus_calibration_projection()
+        if auto_focus_calibration:
+            return self.ensure_focus_calibration_for_active_profile()
+        return None
 
     def _persist_focus_calibration_result(self, result: FocusCalibrationResult) -> None:
         """Persist one focus calibration result into the active equipment profile."""

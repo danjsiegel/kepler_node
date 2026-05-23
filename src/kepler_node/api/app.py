@@ -1348,7 +1348,7 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
         # stale calibration so readiness blockers reflect the new configuration
         # immediately (spec line 1631).
         if profile_id == active_id:
-            controller.set_active_equipment_profile(profile)
+            controller.set_active_equipment_profile(profile, auto_focus_calibration=True)
             controller.session.calibration_accepted = False
 
         return EquipmentProfileResponse(
@@ -1372,8 +1372,13 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
         if profile is None:
             raise HTTPException(status_code=404, detail=f"Profile {profile_id!r} not found")
 
-        controller.set_active_equipment_profile(profile)
-        return _action_resp(controller, f"Active profile set to {profile.display_name!r}")
+        auto_calibration = controller.set_active_equipment_profile(
+            profile, auto_focus_calibration=True
+        )
+        message = f"Active profile set to {profile.display_name!r}"
+        if auto_calibration is not None:
+            message = f"{message}; {auto_calibration.message}"
+        return _action_resp(controller, message)
 
     # ------------------------------------------------------------------ #
     # Target intake endpoints                                              #
