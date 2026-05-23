@@ -197,6 +197,28 @@ def test_drain_runs_before_set_config_during_connect() -> None:
     assert drain_indices[0] < set_indices[0], "drain must precede the first --set-config call"
 
 
+def test_calibrate_focus_range_uses_empirical_probe_targets() -> None:
+    backend = _make_backend()
+    set_calls: list[int] = []
+
+    backend._config_read_succeeds = MagicMock(return_value=True)
+    backend._read_focus_position_raw = MagicMock(return_value=-446)
+    backend._set_focus_position_raw = MagicMock(
+        side_effect=lambda raw_value, timeout=30: set_calls.append(raw_value)
+    )
+    backend._wait_for_focus_settle = MagicMock(side_effect=[-423, 10769, -446])
+    backend._current_lens_model = MagicMock(return_value=None)
+    backend._current_focal_length_mm = MagicMock(return_value=None)
+    backend._current_camera_model = MagicMock(return_value="Fujifilm X-T5")
+    backend._current_focus_mode = MagicMock(return_value="manual")
+
+    result = backend.calibrate_focus_range()
+
+    assert set_calls == [-10000, 11000, -391]
+    assert result.raw_min == -391
+    assert result.raw_max == 10737
+
+
 # ---------------------------------------------------------------------------
 # Capture failure → drain recovery
 # ---------------------------------------------------------------------------

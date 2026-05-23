@@ -449,6 +449,12 @@ def test_kepler_fuji_patch_bundle_probes_focus_endpoints_on_connect_when_runtime
     assert 'bool GPhotoCCD::probeFujiFocusCalibration()' in content, (
         "the tracked Kepler Fuji DSLR patchset must define a broker-side Fuji endpoint probe when no projected calibration exists"
     )
+    assert 'settleRawTarget(-10000, settledLow, errMsg)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must probe the empirically reachable Fuji low endpoint instead of a synthetic full-range minimum"
+    )
+    assert 'settleRawTarget(11000, settledHigh, errMsg)' in content, (
+        "the tracked Kepler Fuji DSLR patchset must probe the empirically reachable Fuji high endpoint instead of a synthetic full-range maximum"
+    )
     assert 'if (!m_HaveFujiFocusCalibration && !m_HaveFujiFocusState)' in content, (
         "the tracked Kepler Fuji DSLR patchset must only probe Fuji endpoints on the initial connect-time focus refresh when calibration is missing"
     )
