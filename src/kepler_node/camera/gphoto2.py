@@ -51,6 +51,8 @@ _ZERO_CAPTURE_DELAY_ASSIGNMENTS = (
     "capturedelay=2",
 )
 
+_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS = 2
+
 
 class Gphoto2CameraBackend:
     """gphoto2 process-backed camera adapter.
@@ -91,12 +93,12 @@ class Gphoto2CameraBackend:
             timeout=timeout,
         )
 
-    def _config_read_succeeds(self, config_path: str) -> bool:
-        result = self._run(["--get-config", config_path])
+    def _config_read_succeeds(self, config_path: str, *, timeout: int = 30) -> bool:
+        result = self._run(["--get-config", config_path], timeout=timeout)
         return result.returncode == 0
 
-    def _config_current_value(self, config_path: str) -> str | None:
-        result = self._run(["--get-config", config_path])
+    def _config_current_value(self, config_path: str, *, timeout: int = 30) -> str | None:
+        result = self._run(["--get-config", config_path], timeout=timeout)
         if result.returncode != 0:
             return None
         for line in result.stdout.splitlines():
@@ -104,9 +106,11 @@ class Gphoto2CameraBackend:
                 return line.split(":", 1)[1].strip()
         return None
 
-    def _first_readable_config(self, config_paths: tuple[str, ...]) -> str | None:
+    def _first_readable_config(
+        self, config_paths: tuple[str, ...], *, timeout: int = 30
+    ) -> str | None:
         for config_path in config_paths:
-            if self._config_read_succeeds(config_path):
+            if self._config_read_succeeds(config_path, timeout=timeout):
                 return config_path
         return None
 
@@ -125,8 +129,8 @@ class Gphoto2CameraBackend:
         assert last_result is not None
         return last_result
 
-    def _auto_detected_cameras(self) -> list[str]:
-        detect_result = self._run(["--auto-detect"])
+    def _auto_detected_cameras(self, *, timeout: int = 30) -> list[str]:
+        detect_result = self._run(["--auto-detect"], timeout=timeout)
         if detect_result.returncode != 0:
             return []
         return [
@@ -437,8 +441,9 @@ class Gphoto2CameraBackend:
 
     def diagnostic_status(self) -> dict[str, Any]:
         """Return a coarse camera USB posture summary for UI/readiness use."""
+        probe_timeout = _DIAGNOSTIC_PROBE_TIMEOUT_SECONDS
         try:
-            detected = self._auto_detected_cameras()
+            detected = self._auto_detected_cameras(timeout=probe_timeout)
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             return {
                 "status": "gphoto_unavailable",
@@ -459,11 +464,18 @@ class Gphoto2CameraBackend:
             (
                 "/main/settings/capturetarget",
                 "/main/actions/bulb",
-            )
+            ),
+            timeout=probe_timeout,
         )
         if remote_probe is not None:
-            capture_mode = self._config_current_value("/main/capturesettings/capturemode")
-            capture_delay = self._config_current_value("/main/capturesettings/capturedelay")
+            capture_mode = self._config_current_value(
+                "/main/capturesettings/capturemode",
+                timeout=probe_timeout,
+            )
+            capture_delay = self._config_current_value(
+                "/main/capturesettings/capturedelay",
+                timeout=probe_timeout,
+            )
             if self._is_autocapture_mode(capture_mode) and self._capture_delay_is_armed(
                 capture_delay
             ):
@@ -495,7 +507,8 @@ class Gphoto2CameraBackend:
                 "/main/status/cameramodel",
                 "/main/status/batterylevel",
                 "/main/actions/autofocusdrive",
-            )
+            ),
+            timeout=probe_timeout,
         )
         if status_probe is not None:
             return {

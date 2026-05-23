@@ -461,11 +461,25 @@ index 081d5800..d021a23f 100644
 +    // GetObject returns PTP ObjectNotFound (~2-10 s after capture); retry with delay.
 +    if (result == GP_ERROR_FILE_NOT_FOUND && is_fuji_camera(gphoto))
 +    {
-+        const int FUJI_MAX_RETRIES = 10;
-+        const int FUJI_RETRY_US   = 2000000; // 2 s
-+        for (int _r = 0; _r < FUJI_MAX_RETRIES && result == GP_ERROR_FILE_NOT_FOUND; _r++)
++        const int FUJI_MAX_RETRIES      = 10;
++        const int FUJI_SLICES_PER_RETRY = 20;
++        const int FUJI_SLICE_US         = 100000; // 20 x 100 ms = 2 s per retry
++        for (int retry = 0; retry < FUJI_MAX_RETRIES && result == GP_ERROR_FILE_NOT_FOUND; retry++)
 +        {
-+            usleep(FUJI_RETRY_US);
++            for (int slice = 0; slice < FUJI_SLICES_PER_RETRY; slice++)
++            {
++                if (gphoto->is_aborted)
++                    break;
++                usleep(FUJI_SLICE_US);
++            }
++
++            if (gphoto->is_aborted)
++            {
++                DEBUGFDEVICE(device, INDI::Logger::DBG_WARNING,
++                             "Fuji: image download retry aborted by user request after retry %d.", retry);
++                break;
++            }
++
 +            result = gp_camera_file_get(gphoto->camera, fn->folder, fn->name,
 +                                        GP_FILE_TYPE_NORMAL, gphoto->camerafile,
 +                                        gphoto->context);
@@ -486,6 +500,10 @@ index 081d5800..d021a23f 100644
      pthread_mutex_lock(&gphoto->mutex);
      DEBUGDEVICE(device, INDI::Logger::DBG_DEBUG, "Mutex locked");
  
+     gphoto->is_aborted = false;
+     pthread_mutex_lock(&gphoto->mutex);
+     gphoto->is_aborted = false;
+     pthread_mutex_unlock(&gphoto->mutex);
 +    gphoto->exposure_event_timeout = 10;
 +    if (is_fuji_camera(gphoto))
 +    {
@@ -619,7 +637,9 @@ index 081d5800..d021a23f 100644
  
 -    gphoto_read_exposure(gphoto);
 +    int result = gphoto_read_exposure(gphoto);
++    pthread_mutex_lock(&gphoto->mutex);
 +    gphoto->is_aborted = false;
++    pthread_mutex_unlock(&gphoto->mutex);
  
 -    return GP_OK;
 +    return result;
