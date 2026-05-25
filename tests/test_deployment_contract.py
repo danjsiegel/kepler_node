@@ -603,6 +603,27 @@ def test_bootstrap_and_upgrade_support_opt_in_indi_gpsd_driver() -> None:
         )
 
 
+def test_upgrade_sh_applies_gpsd_opt_in_after_manifest_driver_restore() -> None:
+    content = (_REPO_ROOT / "upgrade.sh").read_text()
+    manifest_restore = (
+        'if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && -n "${MANIFEST_INDI_PROFILE_DRIVERS}" ]]; then\n'
+        '    INDI_PROFILE_DRIVERS="${MANIFEST_INDI_PROFILE_DRIVERS}"\n'
+        'fi'
+    )
+    gpsd_opt_in = (
+        'if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && "${KEPLER_ENABLE_INDI_GPSD:-false}" == "true" ]] \\\n'
+        "    && ! printf '%s' \"${INDI_PROFILE_DRIVERS}\" | grep -Fq \"${INDI_GPSD_DRIVER_LABEL}\"; then\n"
+        '    INDI_PROFILE_DRIVERS="${INDI_PROFILE_DRIVERS},${INDI_GPSD_DRIVER_LABEL}"\n'
+        'fi'
+    )
+    assert manifest_restore in content, (
+        "upgrade.sh must restore the managed INDI driver list from the install manifest when no explicit override is supplied"
+    )
+    assert gpsd_opt_in in content, (
+        "upgrade.sh must still honor KEPLER_ENABLE_INDI_GPSD after restoring manifest-backed drivers so operators can add GPSD on an existing node"
+    )
+
+
 def test_bootstrap_and_upgrade_health_checks_report_gpsd_profile_membership() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()
