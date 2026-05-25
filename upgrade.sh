@@ -25,6 +25,7 @@ INDI_PORT=7624
 INDIWEBMANAGER_PORT=8624
 INDI_PROFILE_NAME="${KEPLER_INDI_PROFILE_NAME:-Kepler-Starter-Rig}"
 FUJI_CAMERA_DRIVER_LABEL="${KEPLER_FUJI_CAMERA_DRIVER_LABEL:-Kepler Fuji DSLR}"
+INDI_GPSD_DRIVER_LABEL="${KEPLER_INDI_GPSD_DRIVER_LABEL:-GPSD}"
 INDI_GPHOTO_UPSTREAM_REF="${KEPLER_INDI_GPHOTO_UPSTREAM_REF:-f5fdc3a63014a8da84a70230c25bb5bc565e0dfd}"
 INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL}}"
 INDIWEBMANAGER_HOME="${KEPLER_INDIWEBMANAGER_HOME:-/var/lib/indiwebmanager}"
@@ -37,6 +38,20 @@ log()  { echo "  [upgrade] $*"; }
 ok()   { echo "  ✅ $*"; }
 fail() { echo "  ❌ $*" >&2; exit 1; }
 warn() { echo "  ⚠️  $*"; }
+
+json_manifest_string_field() {
+    local manifest_path="$1"
+    local field_name="$2"
+
+    python3 -c 'import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print("")
+    raise SystemExit(0)
+value = data.get(sys.argv[2], "")
+print("" if value is None else value)' "${manifest_path}" "${field_name}"
+}
 
 discard_unsupported_local_git_changes() {
     local unsupported_paths=(
@@ -364,6 +379,17 @@ fi
 
 PREV_VERSION="$(grep -o '"kepler_version": *"[^"]*"' "${MANIFEST_PATH}" | cut -d'"' -f4 || echo "unknown")"
 BOOTSTRAP_PROFILE="$(grep -o '"bootstrap_profile": *"[^"]*"' "${MANIFEST_PATH}" | cut -d'"' -f4 || echo "")"
+MANIFEST_INDI_PROFILE_NAME="$(json_manifest_string_field "${MANIFEST_PATH}" "managed_indi_profile_name")"
+MANIFEST_INDI_PROFILE_DRIVERS="$(json_manifest_string_field "${MANIFEST_PATH}" "managed_indi_profile_drivers")"
+
+if [[ -z "${KEPLER_INDI_PROFILE_NAME:-}" && -n "${MANIFEST_INDI_PROFILE_NAME}" ]]; then
+    INDI_PROFILE_NAME="${MANIFEST_INDI_PROFILE_NAME}"
+fi
+if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && -n "${MANIFEST_INDI_PROFILE_DRIVERS}" ]]; then
+    INDI_PROFILE_DRIVERS="${MANIFEST_INDI_PROFILE_DRIVERS}"
+elif [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && "${KEPLER_ENABLE_INDI_GPSD:-false}" == "true" ]]; then
+    INDI_PROFILE_DRIVERS="${INDI_PROFILE_DRIVERS},${INDI_GPSD_DRIVER_LABEL}"
+fi
 
 log "Current version: ${PREV_VERSION}"
 log "Bootstrap profile: ${BOOTSTRAP_PROFILE}"
@@ -573,6 +599,8 @@ cat > "${MANIFEST_PATH}" <<MANIFEST
   "kepler_version": "${NEW_VERSION}",
   "release_id": "${TARGET_RELEASE:-${NEW_VERSION}}",
   "bootstrap_profile": "${BOOTSTRAP_PROFILE}",
+    "managed_indi_profile_name": "${INDI_PROFILE_NAME}",
+    "managed_indi_profile_drivers": "${INDI_PROFILE_DRIVERS}",
   "installed_at": "${INSTALLED_AT}",
   "last_upgrade_at": "${NOW_ISO}",
   "last_upgrade_result": "in-progress"
@@ -607,6 +635,9 @@ if [[ "${SKIP_RESTART}" == "false" ]]; then
         systemctl restart indiwebmanager || fail "Could not restart indiwebmanager after profile update"
         wait_for_indiwebmanager_api || fail "indiwebmanager API did not recover after profile update"
         start_indiwebmanager_profile
+        if printf '%s' "${INDI_PROFILE_DRIVERS}" | grep -Fq "${INDI_GPSD_DRIVER_LABEL}"; then
+            ok "Managed INDI profile includes ${INDI_GPSD_DRIVER_LABEL} for Ekos GPS/site propagation"
+        fi
     fi
 
     log "Step 5: Starting kepler-node service..."
@@ -722,6 +753,12 @@ else
     warn "gpsd not found — GPS time/location integration will not be available"
 fi
 
+if printf '%s' "${INDI_PROFILE_DRIVERS}" | grep -Fq "${INDI_GPSD_DRIVER_LABEL}"; then
+    ok "Managed INDI profile includes ${INDI_GPSD_DRIVER_LABEL}"
+else
+    ok "Managed INDI profile does not include ${INDI_GPSD_DRIVER_LABEL}"
+fi
+
 if [[ "${BOOTSTRAP_PROFILE}" == "field-fallback" ]]; then
     if command -v kstars &>/dev/null; then
         ok "kstars found at $(command -v kstars)"
@@ -769,6 +806,7 @@ echo "  New version     : ${NEW_VERSION}"
 echo "  Profile         : ${BOOTSTRAP_PROFILE}"
 echo "  API URL         : ${KEPLER_URL}"
 echo "  UI URL          : ${UI_URL}"
+echo "  INDI profile    : ${INDI_PROFILE_NAME}"
 echo ""
 
 if ${HEALTH_FAIL}; then

@@ -31,26 +31,36 @@ Use this when the Pi must host the full workflow on its own (field-fallback prof
    ```
    RDP client → <NODE_IP>:3389
    ```
-4. In KStars/Ekos, plan the target (choose the object, framing, and run parameters).
-5. Return to the Kepler UI → Target tab, stage the target with your planned run parameters, then review and confirm.
-6. Go to the Overview tab and press **Calibrate** if not yet calibrated.
-7. When calibration completes, go to the Target tab and press **Start Session**.
-8. Monitor session state and recovery actions in the Session tab.
+4. In KStars/Ekos, plan and stage the target (choose the object, framing, and sequence parameters).
+5. Go to the Kepler UI → Overview tab and press **Calibrate** if not yet calibrated.
+6. Once calibration completes, return to KStars/Ekos and start your capture sequence.
+7. Back in the Kepler UI → **Session tab**: when the node shows `supervision_ready`, click
+   **🔭 Attach Supervision Session** to hand Kepler supervisory control over the running Ekos session.
+8. Kepler transitions to `ekos_wait`, then `monitoring` once it detects the running sequence.
+9. Monitor supervisory state, ownership, and any active interventions in the Session tab.
+   The **Active Owner** metric shows which controller (Ekos, Kepler, or Operator) currently holds
+   the workflow; the **supervisory next action** line describes what Kepler is doing or waiting for.
 
 ## Runbook 3: Headless Remote-Planner Session
 
 Use this when a laptop or other client runs KStars/Ekos (headless-node profile).
 
 1. Open the Kepler UI (`http://<NODE_IP>:8501`).
-2. Check the Overview tab: planner mode should read **Headless Node (remote KStars/Ekos)** and show the INDI port (default: `7624`).
+2. Check the Overview tab: planner mode should read **Headless Node (remote KStars/Ekos)** and show
+   the INDI port (default: `7624`).
 3. In KStars/Ekos on your laptop, add an INDI server pointing at the node:
    - Host: `<NODE_IP>`
    - Port: `7624`
-4. Connect KStars/Ekos and plan the target on the remote client (choose the object, framing, and run parameters).
-5. Return to the Kepler UI → Target tab, stage the target with your planned run parameters, then confirm or adjust as needed.
-6. Go to the Overview tab and press **Calibrate** if not yet calibrated.
-7. When calibration completes, go to the Target tab and press **Start Session**.
-8. Monitor session state and recovery actions in the Session tab.
+4. Connect KStars/Ekos and plan and stage the target on the remote client (choose the object,
+   framing, and sequence parameters).
+5. Go to the Kepler UI → Overview tab and press **Calibrate** if not yet calibrated.
+6. Once calibration completes, start the capture sequence in KStars/Ekos on your laptop.
+7. Back in the Kepler UI → **Session tab**: when the node shows `supervision_ready`, click
+   **🔭 Attach Supervision Session** to hand Kepler supervisory control over the running Ekos session.
+8. Kepler transitions to `ekos_wait`, then `monitoring` once it detects the running sequence.
+9. Monitor supervisory state, ownership, and any active interventions in the Session tab.
+   The **Active Owner** metric shows which controller holds the workflow; the **supervisory next
+   action** line describes what Kepler is doing or waiting for.
 
 ## Runbook 4: Calibration
 

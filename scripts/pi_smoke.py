@@ -230,7 +230,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         _append(results, camera_level, "camera remote mode", camera_detail)
 
     if args.require_kepler_stack:
-        for service_name in ("indiserver", "kepler-node", "kepler-ui"):
+        for service_name in ("indiwebmanager", "kepler-node", "kepler-ui"):
             state = _service_state(service_name)
             if state == "active":
                 _append(results, "pass", f"service {service_name}", f"{service_name} is active")
@@ -316,7 +316,7 @@ def main() -> int:
     parser.add_argument(
         "--require-kepler-stack",
         action="store_true",
-        help="Require kepler-node, kepler-ui, indiserver, and the local API to be active",
+        help="Require kepler-node, kepler-ui, indiwebmanager, and the local API to be active",
     )
     parser.add_argument(
         "--require-camera-remote-mode",

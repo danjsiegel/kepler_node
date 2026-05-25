@@ -45,6 +45,10 @@ class KeplerApiClient:
         """GET /api/v1/readiness"""
         return self._get("/api/v1/readiness")
 
+    def get_planner_mode(self) -> dict[str, Any]:
+        """GET /api/v1/planner-mode — active planner mode from the install manifest."""
+        return self._get("/api/v1/planner-mode")
+
     def post_time_confirm(self, confirmed_at_iso: str) -> dict[str, Any]:
         """POST /api/v1/time/confirm — apply an operator-confirmed timestamp."""
         return self._post("/api/v1/time/confirm", body={"confirmed_at": confirmed_at_iso})
@@ -97,6 +101,15 @@ class KeplerApiClient:
         """POST /api/v1/session/clear-failure"""
         return self._post("/api/v1/session/clear-failure")
 
+    def post_session_attach(self) -> dict[str, Any]:
+        """POST /api/v1/session/attach — attach supervision to an Ekos-managed session.
+
+        Transitions the node from READY → EKOS_WAIT and locks supervisory control.
+        422 when supervision blockers are present (missing profile, Ekos unavailable, etc.).
+        409 when the node is not in the ready state.
+        """
+        return self._post("/api/v1/session/attach")
+
     # ------------------------------------------------------------------ #
     # Review                                                               #
     # ------------------------------------------------------------------ #
@@ -120,6 +133,10 @@ class KeplerApiClient:
     def get_session_outcome(self) -> dict[str, Any] | None:
         """GET /api/v1/session/current/outcome — None when session is not terminal."""
         return self._get_nullable("/api/v1/session/current/outcome")
+
+    def get_session_intervention(self) -> dict[str, Any] | None:
+        """GET /api/v1/session/current/intervention — None when no session is supervised."""
+        return self._get_nullable("/api/v1/session/current/intervention")
 
     def get_session_events(
         self,

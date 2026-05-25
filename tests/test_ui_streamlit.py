@@ -135,11 +135,40 @@ def test_all_three_tabs_render_in_no_active_session_posture() -> None:
     headers = [h.value for h in at.header]
     assert "Overview" in headers, f"Overview header missing; found: {headers}"
     assert "Equipment Profiles" in headers, f"Equipment Profiles header missing; found: {headers}"
-    assert "Target & Session Start" in headers, (
-        f"Target & Session Start header missing; found: {headers}"
+    assert "Target Context" in headers, (
+        f"Target Context header missing; found: {headers}"
     )
     assert "Session" in headers, f"Session header missing; found: {headers}"
     assert "Review" in headers, f"Review header missing; found: {headers}"
+
+
+def test_target_tab_is_supervision_first_no_start_session() -> None:
+    """Target tab must not expose a Start Session or target staging form.
+    In v1.1, target selection happens in KStars/Ekos; Kepler is read-only here."""
+    client = _make_mode_client(
+        planner_mode="headless-node",
+        planner_connection_details={
+            "mode": "remote_kstars_ekos",
+            "host": "192.168.1.42",
+            "summary": "Connect remotely",
+            "indi_port": 7624,
+        },
+    )
+    at = _run_app_with_mock_client(client)
+
+    assert not at.exception, f"Streamlit app raised: {at.exception}"
+    button_labels = [b.label for b in at.button]
+    assert not any("Start Session" in lbl for lbl in button_labels), (
+        f"Start Session button must not appear in v1.1 supervision-first UI; "
+        f"found button labels: {button_labels}"
+    )
+    assert not any("Stage Target" in lbl or "📡" in lbl for lbl in button_labels), (
+        f"Target staging submit button must not appear; found: {button_labels}"
+    )
+    headers = [h.value for h in at.header]
+    assert "Target Context" in headers, (
+        f"Target tab must use supervision-first header 'Target Context'; found: {headers}"
+    )
 
 
 def test_session_tab_shows_no_active_session_info() -> None:
@@ -336,3 +365,78 @@ def test_field_mode_flow_renders_actionable_local_planner_guidance() -> None:
     assert any("Kepler API" in lbl for lbl in metric_labels), metric_labels
     assert any("xRDP Service" in lbl for lbl in metric_labels), metric_labels
     assert any("reachable" in v for v in metric_values), metric_values
+
+
+def test_session_tab_shows_attach_button_when_supervision_ready() -> None:
+    """Session tab renders the Attach Supervision Session button when supervision_ready is True
+    and the node is in the ready state with no active session."""
+    client = _make_mock_client()
+    client.get_readiness.return_value = {
+        **client.get_readiness.return_value,
+        "supervision_ready": True,
+    }
+
+    at = _run_app_with_mock_client(client)
+
+    assert not at.exception, f"Streamlit app raised: {at.exception}"
+    button_labels = [b.label for b in at.button]
+    assert any("Attach Supervision Session" in lbl for lbl in button_labels), (
+        f"Expected 'Attach Supervision Session' button; found button labels: {button_labels}"
+    )
+
+
+def test_session_tab_shows_supervisory_fields_when_session_is_monitoring() -> None:
+    """Session tab renders Active Owner metric and supervisory_next_action info when an active
+    session is in the 'monitoring' state."""
+    client = _make_mock_client()
+    client.get_session_state.return_value = {
+        "state": "monitoring",
+        "workflow_intent": "deep_sky_lp",
+        "control_locked": True,
+        "active_owner": "ekos",
+        "supervisory_next_action": "monitor_ekos_session",
+        "intervention_summary": {"active_kind": None, "total_records": 0, "active_record": None},
+        "latest_message": None,
+        "blockers": [],
+        "degraded": [],
+        "pause_summary": None,
+    }
+
+    at = _run_app_with_mock_client(client)
+
+    assert not at.exception, f"Streamlit app raised: {at.exception}"
+    metric_labels = [m.label for m in at.metric]
+    assert "Active Owner" in metric_labels, (
+        f"Expected 'Active Owner' metric; found: {metric_labels}"
+    )
+    info_values = [i.value for i in at.info]
+    assert any("Monitoring" in v or "monitor" in v.lower() for v in info_values), (
+        f"Expected supervisory next action info; found info blocks: {info_values}"
+    )
+
+
+def test_attach_button_calls_post_session_attach() -> None:
+    """Clicking Attach Supervision Session invokes post_session_attach on the API client."""
+    client = _make_mock_client()
+    client.get_readiness.return_value = {
+        **client.get_readiness.return_value,
+        "supervision_ready": True,
+    }
+    client.post_session_attach.return_value = {
+        "message": "Supervision attached — Kepler is waiting for your Ekos session"
+    }
+
+    st.cache_resource.clear()
+    with patch("kepler_node.ui.api_client.KeplerApiClient", return_value=client):
+        at = AppTest.from_file("src/kepler_node/ui/streamlit_app.py", default_timeout=10)
+        at.run()
+
+        attach_buttons = [b for b in at.button if "Attach Supervision Session" in b.label]
+        assert attach_buttons, (
+            f"Expected 'Attach Supervision Session' button; found: {[b.label for b in at.button]}"
+        )
+        attach_buttons[0].click().run()
+
+    st.cache_resource.clear()
+
+    client.post_session_attach.assert_called_once()

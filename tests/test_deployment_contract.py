@@ -589,6 +589,49 @@ def test_bootstrap_and_upgrade_wipe_and_recreate_starter_rig_indi_profile() -> N
         )
 
 
+def test_bootstrap_and_upgrade_support_opt_in_indi_gpsd_driver() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert "KEPLER_ENABLE_INDI_GPSD" in content, (
+            f"{script_name} must offer a supported opt-in for the INDI GPSD driver instead of forcing operators to replace the full driver list"
+        )
+        assert "KEPLER_INDI_GPSD_DRIVER_LABEL" in content, (
+            f"{script_name} must allow the GPSD driver label to be overridden for distro-specific indiwebmanager catalogs"
+        )
+        assert 'INDI_PROFILE_DRIVERS="${INDI_PROFILE_DRIVERS},${INDI_GPSD_DRIVER_LABEL}"' in content, (
+            f"{script_name} must append the GPSD driver to the managed INDI profile when the supported opt-in is enabled"
+        )
+
+
+def test_bootstrap_and_upgrade_health_checks_report_gpsd_profile_membership() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert 'ok "Managed INDI profile includes ${INDI_GPSD_DRIVER_LABEL}"' in content, (
+            f"{script_name} must explicitly report when the managed INDI profile includes the GPSD driver"
+        )
+        assert 'ok "Managed INDI profile does not include ${INDI_GPSD_DRIVER_LABEL}"' in content, (
+            f"{script_name} must explicitly report when the managed INDI profile omits the GPSD driver"
+        )
+
+
+def test_bootstrap_and_upgrade_persist_managed_indi_profile_settings() -> None:
+    bootstrap_content = (_REPO_ROOT / "bootstrap.sh").read_text()
+    upgrade_content = (_REPO_ROOT / "upgrade.sh").read_text()
+
+    assert '"managed_indi_profile_name": "${INDI_PROFILE_NAME}"' in bootstrap_content, (
+        "bootstrap.sh must persist the managed INDI profile name so upgrades can keep the same broker profile"
+    )
+    assert '"managed_indi_profile_drivers": "${INDI_PROFILE_DRIVERS}"' in bootstrap_content, (
+        "bootstrap.sh must persist the managed INDI driver list so later upgrades do not silently drop optional drivers"
+    )
+    assert "json_manifest_string_field" in upgrade_content, (
+        "upgrade.sh must read persisted managed INDI profile settings from the install manifest"
+    )
+    assert "managed_indi_profile_drivers" in upgrade_content, (
+        "upgrade.sh must restore the persisted managed INDI driver list when no explicit override is supplied"
+    )
+
+
 def test_bootstrap_and_upgrade_write_indiwebmanager_with_real_home() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()

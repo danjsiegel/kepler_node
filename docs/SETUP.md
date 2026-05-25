@@ -24,14 +24,14 @@ Kepler Node is intended to support two operator modes.
 - The Pi hosts the Kepler services.
 - The Pi also has on-node KStars/Ekos installed.
 - The operator reaches the planner session through the supported remote-desktop path (xRDP on port 3389).
-- Kepler remains responsible for readiness, verification, correction, capture control, and recovery.
+- Kepler supervises the session: readiness gating, quality analysis, anomaly detection, intervention policy, and recovery. KStars/Ekos owns primary capture execution.
 
 ### Headless With Remote Planner
 
 - The Pi hosts the Kepler services and hardware stack.
 - KStars/Ekos runs on a laptop or another client on the same network.
 - The remote client connects to the node-side services.
-- Kepler still owns control-lock, verification, correction, and recovery.
+- Kepler supervises the session from the node side: conflict detection, control ownership rules, independent frame verification, intervention policy, and recovery.
 
 ## Supported Node Install And Upgrade
 
@@ -71,6 +71,27 @@ Bootstrap steps:
 
 Post-install summary shows the Kepler API URL, planner connection details (INDI port or xRDP port 3389), and any health-check warnings.
 
+### GPS And RTC During Bootstrap
+
+The supported bootstrap always installs `gpsd` and the optional `indi-gpsd` package when the distro ships it, but they serve different roles:
+
+- Kepler trusted time and location use the node's `gpsd` path directly.
+- The DS3231 RTC remains a Raspberry Pi OS clock source, not an INDI driver.
+- The INDI GPSD driver is only needed when you want KStars/Ekos to ingest the node GPS over the managed INDI profile.
+
+If you only want Kepler to trust GPS-backed time, the default bootstrap is enough.
+
+If you also want the managed Ekos profile to expose GPS through INDI, enable it explicitly:
+
+```bash
+sudo env KEPLER_ENABLE_INDI_GPSD=true ./bootstrap.sh --profile headless-node
+
+# Existing node: refresh services and keep the GPSD driver in the managed profile
+sudo env KEPLER_ENABLE_INDI_GPSD=true ./upgrade.sh
+```
+
+That choice is persisted in the install manifest so later upgrades keep the same managed INDI driver list unless you override `KEPLER_INDI_PROFILE_DRIVERS` yourself.
+
 ### Upgrade Command
 
 ```bash
@@ -82,11 +103,11 @@ sudo ./upgrade.sh --release v1.2.0
 
 Upgrade steps:
 1. Reads the existing install manifest (fails if none — run bootstrap first)
-2. Stops managed services in dependency order (`kepler-ui` → `kepler-node` → `indiserver`), then pulls latest code (or checks out the specified release)
+2. Stops managed services in dependency order (`kepler-ui` → `kepler-node` → `indiwebmanager`), then pulls latest code (or checks out the specified release)
 3. Syncs Python dependencies
 4. Refreshes managed service units and disables the GVFS gphoto desktop monitor so active GUI sessions release attached cameras
 5. Updates the install manifest with new version and upgrade timestamp (`in-progress`)
-6. Restarts managed services in dependency order (`indiserver` → `kepler-node` → `kepler-ui` if present)
+6. Restarts managed services in dependency order (`indiwebmanager` → `kepler-node` → `kepler-ui` if present)
 7. Runs post-upgrade health checks; on success, persists `success` outcome; on failure, persists `health-checks-failed` and exits 1
 
 If a Fuji or other USB PTP camera appears in `lsusb` but Kepler still reports it disconnected, the usual cause is a desktop-session auto-mounter such as `gvfsd-gphoto2` claiming the device. The supported bootstrap and upgrade flow now masks that monitor so Kepler can claim the camera through `gphoto2`.

@@ -5,8 +5,8 @@ Entrypoint: ``streamlit run src/kepler_node/ui/streamlit_app.py``
 Five mobile-first surfaces are provided as tabs:
 - **Overview**: node readiness, blockers, calibration action, planner mode, time, and power status.
 - **Equipment**: active profile visibility and profile selection.
-- **Target**: staged target review, run-plan summary, and session start.
-- **Session**: current Claw state, workflow intent, session controls.
+- **Target**: read-only view of the current target Kepler observes from KStars/Ekos, equipment profile context.
+- **Session**: supervisory state, active owner, intervention status, and session controls.
 - **Review**: latest frames, artifacts, outcome, and terminal acknowledgment actions.
 
 The UI is a thin consumer of the local API; it owns no orchestration logic.
@@ -75,6 +75,10 @@ _STATE_VOCAB = {
     "boot": "Degraded",
     "discover": "Degraded",
     "connect": "Degraded",
+    # v1.1 supervisory states
+    "ekos_wait": "Waiting",
+    "monitoring": "Healthy",
+    "intervening": "Intervening",
 }
 
 
@@ -155,7 +159,10 @@ def _planner_mode_copy(
             [
                 "Open KStars/Ekos on a laptop or another trusted client.",
                 "Add the node as a remote INDI server using the host and port below.",
-                "Return here to review the staged target and start the managed session.",
+                "Calibrate the node here (Overview tab → Calibrate), then start your capture"
+                " sequence in KStars/Ekos.",
+                "Return to the Session tab and click Attach Supervision Session to hand Kepler"
+                " supervisory control over the running Ekos session.",
             ],
             [
                 ("Planner Transport", "Remote KStars/Ekos over INDI"),
@@ -169,8 +176,11 @@ def _planner_mode_copy(
             "Open Local Planner Session",
             [
                 "Connect to the node with an RDP client using the port below.",
-                "Use the on-node KStars/Ekos session to choose framing and capture intent.",
-                "Return here for calibration, verification, and managed session control.",
+                "Use the on-node KStars/Ekos session to choose framing and sequence parameters.",
+                "Calibrate the node here (Overview tab → Calibrate), then start your capture"
+                " sequence in KStars/Ekos.",
+                "Return to the Session tab and click Attach Supervision Session to hand Kepler"
+                " supervisory control over the running Ekos session.",
             ],
             [
                 ("Planner Transport", "On-node KStars/Ekos via xRDP"),
@@ -465,7 +475,7 @@ with equipment_tab:
 # ===================================================================  #
 
 with target_tab:
-    st.header("Target & Session Start")
+    st.header("Target Context")
     client = _client()
 
     try:
@@ -475,10 +485,9 @@ with target_tab:
         st.error(f"Cannot reach Kepler API: {exc}")
         st.stop()
 
-    current_state_t = node_status_t.get("state", "")
     active_prof_t = node_status_t.get("active_equipment_profile")
 
-    # Show active equipment profile context
+    # Equipment profile context
     if active_prof_t:
         st.caption(
             f"Active profile: **{active_prof_t.get('display_name', '—')}** · "
@@ -492,9 +501,14 @@ with target_tab:
     else:
         st.warning("No equipment profile selected.  Go to the Equipment tab first.")
 
-    # Current staged target
+    # Kepler observes the current target from KStars/Ekos; this panel is read-only.
+    st.info(
+        "Target selection and sequence authoring are done in KStars/Ekos. "
+        "Kepler observes the active target here and uses it for supervision context."
+    )
+
     if current_target:
-        st.subheader("Staged Target")
+        st.subheader("Observed Target")
         col_tl, col_ra, col_dec = st.columns(3)
         with col_tl:
             st.metric("Target", current_target.get("target_label", "—"))
@@ -502,10 +516,13 @@ with target_tab:
             st.metric("RA (h)", f"{current_target.get('ra_hours', 0):.4f}")
         with col_dec:
             st.metric("Dec (°)", f"{current_target.get('dec_deg', 0):.4f}")
-        st.caption(f"Source: {current_target.get('target_source', '—')}")
+        source = current_target.get("target_source", "—")
+        st.caption(f"Source: {source}")
+        if source == "kstars_ekos":
+            st.success("✅ Target observed from KStars/Ekos")
         run_params = current_target.get("run_parameters", {})
         if run_params:
-            st.markdown("**Run Plan Summary**")
+            st.markdown("**Sequence Summary (from Ekos)**")
             col_exp, col_cam, col_stop = st.columns(3)
             with col_exp:
                 st.metric("Exposure", f"{run_params.get('exposure_seconds', '—')} s")
@@ -524,99 +541,29 @@ with target_tab:
                     "Stop Condition",
                     ", ".join(f"{key}={value}" for key, value in stop_condition.items()) or "—",
                 )
-            if current_target.get("target_source") == "kstars_ekos":
-                st.info(
-                    "Target intent came from KStars/Ekos. Kepler will still verify framing locally before capture."
-                )
-            else:
-                st.info(
-                    "This target was staged locally in Kepler. The node will still verify framing locally before capture."
-                )
-
-        if st.button("🗑 Clear Target", key="clear_target_btn"):
-            try:
-                client.delete_target_current()
-                st.success("Target cleared")
-                st.rerun()
-            except Exception as exc:
-                st.error(str(exc))
-
-        if current_state_t == "ready":
-            st.divider()
-            st.subheader("▶ Start Session")
-            has_run_params = bool(
-                run_params.get("exposure_seconds")
-                and run_params.get("camera_settings")
-                and run_params.get("stop_condition")
-            )
-            if not has_run_params:
-                st.warning(
-                    "Run parameters (exposure_seconds, camera_settings, stop_condition) are required."
-                )
-            else:
-                if st.button("🚀 Start Session", key="start_session_btn"):
-                    try:
-                        resp = client.post_session_start()
-                        st.success(resp.get("message", "Session started"))
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(str(exc))
-        elif current_state_t in {
-            "target_acquired",
-            "test_capture",
-            "solve",
-            "correct",
-            "center_verify",
-            "capture",
-            "guard",
-            "recover",
-        }:
-            st.info("Session in progress.  See the Session tab for controls.")
     else:
-        st.info("No target staged.")
-
-    st.divider()
-    st.subheader("Stage a Target")
-
-    with st.form("stage_target_form"):
-        target_label = st.text_input("Target Name", placeholder="e.g. M31")
-        ra_hours = st.number_input(
-            "RA (hours)", min_value=0.0, max_value=24.0, step=0.001, format="%.4f"
+        st.info(
+            "No target observed yet.  "
+            "Start a sequence in KStars/Ekos — Kepler will pick up the target automatically."
         )
-        dec_deg = st.number_input(
-            "Dec (degrees)", min_value=-90.0, max_value=90.0, step=0.001, format="%.4f"
-        )
-        target_source = st.selectbox("Source", ["manual", "kstars_ekos", "catalog"], index=0)
 
-        st.markdown("**Run Parameters**")
-        exposure_seconds = st.number_input(
-            "Exposure (seconds)", min_value=1.0, step=1.0, value=120.0
-        )
-        gain = st.number_input("Camera Gain", min_value=0, step=1, value=100)
-        frame_count = st.number_input("Frame Count Limit", min_value=1, step=1, value=60)
+_SUPERVISORY_NEXT_ACTION_LABEL: dict[str, str] = {
+    "wait_for_ekos_session": "⏳ Waiting for KStars/Ekos session to start",
+    "monitor_ekos_session": "✅ Monitoring Ekos session",
+    "request_autofocus": "🔭 Requesting autofocus",
+    "request_re_solve": "🔭 Requesting re-solve",
+    "pause_and_review": "⏸ Pausing for operator review",
+    "intervention_pending": "⚠️ Intervention in progress",
+}
 
-        submitted = st.form_submit_button("📡 Stage Target")
-        if submitted:
-            if not target_label.strip():
-                st.error("Target name is required.")
-            else:
-                body = {
-                    "target_label": target_label.strip(),
-                    "ra_hours": ra_hours,
-                    "dec_deg": dec_deg,
-                    "target_source": target_source,
-                    "run_parameters": {
-                        "exposure_seconds": exposure_seconds,
-                        "camera_settings": {"gain": gain},
-                        "stop_condition": {"frame_count": int(frame_count)},
-                    },
-                }
-                try:
-                    client.post_target(body)
-                    st.success(f"Target {target_label!r} staged")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
+_ACTIVE_OWNER_LABEL: dict[str, str] = {
+    "ekos": "KStars/Ekos",
+    "kepler": "Kepler",
+    "operator": "Operator",
+    "unknown": "Unknown",
+    "none": "None",
+}
+
 
 with session_tab:
     st.header("Session")
@@ -624,12 +571,41 @@ with session_tab:
 
     try:
         session_state = client.get_session_state()
+        readiness_s = client.get_readiness()
+        node_status_s = client.get_node_status()
     except Exception as exc:
         st.error(f"Cannot reach Kepler API: {exc}")
         st.stop()
 
+    current_state_s = node_status_s.get("state", "")
+    supervision_ready = readiness_s.get("supervision_ready", False)
+
     if session_state is None:
-        st.info("No active managed session.  Calibrate or start a session from the Overview.")
+        st.info("No active managed session.")
+
+        # v1.1 supervision attach path: operator starts Ekos, then attaches Kepler supervision
+        if supervision_ready and current_state_s == "ready":
+            st.info(
+                "Node is ready to supervise. Start your capture sequence in KStars/Ekos, "
+                "then attach Kepler supervision below."
+            )
+            if st.button("🔭 Attach Supervision Session", key="attach_session_btn"):
+                try:
+                    resp = client.post_session_attach()
+                    st.success(
+                        resp.get(
+                            "message",
+                            "Supervision attached — Kepler is waiting for your Ekos session",
+                        )
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+        elif current_state_s == "ready":
+            supervision_blockers = readiness_s.get("supervision_blockers", [])
+            if supervision_blockers:
+                with st.expander("⚠️ Supervision blockers — resolve these before attaching"):
+                    _show_blockers(supervision_blockers)
     else:
         # --- Mobile-priority: current state, problem, next action above fold ---
         state = session_state.get("state", "—")
@@ -644,6 +620,21 @@ with session_tab:
             st.metric("Intent", intent)
             lock_icon = "🔒" if session_state.get("control_locked") else "🔓"
             st.metric("Control", lock_icon)
+
+        # v1.1 canonical ownership signal
+        active_owner = session_state.get("active_owner")
+        if active_owner:
+            st.metric(
+                "Active Owner",
+                _ACTIVE_OWNER_LABEL.get(active_owner, active_owner),
+            )
+
+        # v1.1 supervisory next action — tells the operator what Kepler is doing or waiting for
+        next_action = session_state.get("supervisory_next_action")
+        if next_action:
+            st.info(
+                f"🔭 {_SUPERVISORY_NEXT_ACTION_LABEL.get(next_action, next_action)}"
+            )
 
         latest_msg = session_state.get("latest_message")
         if latest_msg:
@@ -666,6 +657,18 @@ with session_tab:
                 st.write(f"**Resume to:** {pause.get('resume_state', '—')}")
                 if pause.get("operator_action_required"):
                     st.warning(f"Action required: {pause['operator_action_required']}")
+
+        # v1.1 intervention summary
+        intervention = session_state.get("intervention_summary")
+        if intervention and intervention.get("active_kind"):
+            with st.expander(f"⚠️ Active Intervention: {intervention['active_kind']}"):
+                active_rec = intervention.get("active_record")
+                if active_rec:
+                    st.write(f"**Reason:** {active_rec.get('reason', '—')}")
+                    st.write(f"**Retry count:** {active_rec.get('retry_count', 0)}")
+                total = intervention.get("total_records", 0)
+                if total:
+                    st.caption(f"{total} total intervention records this session")
 
         st.divider()
 

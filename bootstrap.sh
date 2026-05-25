@@ -26,12 +26,17 @@ INDI_PORT=7624
 INDIWEBMANAGER_PORT=8624
 INDI_PROFILE_NAME="${KEPLER_INDI_PROFILE_NAME:-Kepler-Starter-Rig}"
 FUJI_CAMERA_DRIVER_LABEL="${KEPLER_FUJI_CAMERA_DRIVER_LABEL:-Kepler Fuji DSLR}"
+INDI_GPSD_DRIVER_LABEL="${KEPLER_INDI_GPSD_DRIVER_LABEL:-GPSD}"
 INDI_GPHOTO_UPSTREAM_REF="${KEPLER_INDI_GPHOTO_UPSTREAM_REF:-f5fdc3a63014a8da84a70230c25bb5bc565e0dfd}"
 INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL}}"
 INDIWEBMANAGER_HOME="${KEPLER_INDIWEBMANAGER_HOME:-/var/lib/indiwebmanager}"
 SKIP_REBOOT_PROMPT=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEPLER_VERSION="$(grep '^version' "${SCRIPT_DIR}/pyproject.toml" 2>/dev/null | head -1 | sed 's/version = "\(.*\)"/\1/' || echo "dev")"
+
+if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && "${KEPLER_ENABLE_INDI_GPSD:-false}" == "true" ]]; then
+    INDI_PROFILE_DRIVERS="${INDI_PROFILE_DRIVERS},${INDI_GPSD_DRIVER_LABEL}"
+fi
 
 # ------------------------------------------------------------------ #
 # Helpers                                                              #
@@ -487,6 +492,8 @@ cat > "${MANIFEST_PATH}" <<MANIFEST
   "kepler_version": "${KEPLER_VERSION}",
   "release_id": "${KEPLER_VERSION}",
   "bootstrap_profile": "${PROFILE}",
+    "managed_indi_profile_name": "${INDI_PROFILE_NAME}",
+    "managed_indi_profile_drivers": "${INDI_PROFILE_DRIVERS}",
   "installed_at": "${NOW_ISO}",
   "last_upgrade_at": null,
   "last_upgrade_result": null
@@ -586,6 +593,9 @@ configure_indiwebmanager_profile
 systemctl restart indiwebmanager || warn "INDI broker did not restart after profile update — check: journalctl -u indiwebmanager"
 wait_for_indiwebmanager_api || warn "indiwebmanager API did not recover after profile update"
 start_indiwebmanager_profile
+if printf '%s' "${INDI_PROFILE_DRIVERS}" | grep -Fq "${INDI_GPSD_DRIVER_LABEL}"; then
+    ok "Managed INDI profile includes ${INDI_GPSD_DRIVER_LABEL} for Ekos GPS/site propagation"
+fi
 ok "INDI broker service configured"
 
 if [[ "${PROFILE}" == "field-fallback" ]]; then
@@ -691,6 +701,12 @@ else
     warn "gpsd not found — GPS time/location integration will not be available"
 fi
 
+if printf '%s' "${INDI_PROFILE_DRIVERS}" | grep -Fq "${INDI_GPSD_DRIVER_LABEL}"; then
+    ok "Managed INDI profile includes ${INDI_GPSD_DRIVER_LABEL}"
+else
+    ok "Managed INDI profile does not include ${INDI_GPSD_DRIVER_LABEL}"
+fi
+
 if [[ "${PROFILE}" == "field-fallback" ]]; then
     if command -v kstars &>/dev/null; then
         ok "kstars found at $(command -v kstars)"
@@ -738,6 +754,7 @@ echo "  Kepler version: ${KEPLER_VERSION}"
 echo "  API URL       : ${KEPLER_URL}"
 echo "  UI URL        : ${UI_URL}"
 echo "  Data dir      : ${DATA_DIR}"
+echo "  INDI profile  : ${INDI_PROFILE_NAME}"
 if [[ "${PROFILE}" == "headless-node" ]]; then
     echo "  INDI port     : ${INDI_PORT} (connect remote KStars/Ekos to this node)"
 elif [[ "${PROFILE}" == "field-fallback" ]]; then
