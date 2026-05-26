@@ -7,6 +7,7 @@
 #   ./upgrade.sh
 #   ./upgrade.sh --release v1.2.0
 #   ./upgrade.sh --skip-restart
+#   ./upgrade.sh --enable-indi-gpsd
 #   ./upgrade.sh --help
 
 set -euo pipefail
@@ -29,6 +30,7 @@ INDI_GPSD_DRIVER_LABEL="${KEPLER_INDI_GPSD_DRIVER_LABEL:-GPSD}"
 INDI_GPHOTO_UPSTREAM_REF="${KEPLER_INDI_GPHOTO_UPSTREAM_REF:-f5fdc3a63014a8da84a70230c25bb5bc565e0dfd}"
 INDI_PROFILE_DRIVERS="${KEPLER_INDI_PROFILE_DRIVERS:-ES iEXOS100 PMC-Eight,${FUJI_CAMERA_DRIVER_LABEL}}"
 INDIWEBMANAGER_HOME="${KEPLER_INDIWEBMANAGER_HOME:-/var/lib/indiwebmanager}"
+ENABLE_INDI_GPSD="${KEPLER_ENABLE_INDI_GPSD:-false}"
 
 # ------------------------------------------------------------------ #
 # Helpers                                                              #
@@ -186,10 +188,17 @@ configure_indiwebmanager_profile() {
     local available_drivers_json
     local installed_driver_labels
     local missing_drivers
+    local legacy_profile_name
+    local encoded_legacy_name
 
     encoded_name="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${INDI_PROFILE_NAME}")"
     profile_payload="$(python3 -c 'import json, sys; print(json.dumps({"port": int(sys.argv[1]), "autostart": 1, "autoconnect": 1}))' "${INDI_PORT}")"
     drivers_payload="$(python3 -c 'import json, sys; print(json.dumps([{"label": driver.strip()} for driver in sys.argv[1].split(",") if driver.strip()]))' "${INDI_PROFILE_DRIVERS}")"
+
+    legacy_profile_name=""
+    if [[ "${INDI_PROFILE_NAME}" == "Kepler-Starter-Rig" ]]; then
+        legacy_profile_name="Kepler Starter Rig"
+    fi
 
     available_drivers_json="$(curl -sf "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/drivers")" \
         || fail "Could not read indiwebmanager driver catalog"
@@ -203,6 +212,10 @@ configure_indiwebmanager_profile() {
     fi
 
     curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/server/stop" >/dev/null 2>&1 || true
+    if [[ -n "${legacy_profile_name}" ]]; then
+        encoded_legacy_name="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${legacy_profile_name}")"
+        curl -sf -X DELETE "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_legacy_name}" >/dev/null 2>&1 || true
+    fi
     curl -sf -X DELETE "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null 2>&1 || true
     curl -sf -X POST "http://127.0.0.1:${INDIWEBMANAGER_PORT}/api/profiles/${encoded_name}" >/dev/null \
         || fail "Could not create indiwebmanager profile ${INDI_PROFILE_NAME}"
@@ -334,6 +347,7 @@ Options:
     --release TAG       Target git tag or branch (default: current HEAD / latest main)
     --data-dir DIR      Data root (default: /var/lib/kepler or \$KEPLER_DATA_DIR)
     --port PORT         Kepler API port (default: 8000)
+    --enable-indi-gpsd  Add the GPSD driver to the managed indiwebmanager profile
     --skip-restart      Do not restart the systemd service after upgrade
     --help              Show this help
 EOF
@@ -355,6 +369,7 @@ while [[ $# -gt 0 ]]; do
         --release)      TARGET_RELEASE="$2"; shift 2 ;;
         --data-dir)     DATA_DIR="$2";       shift 2 ;;
         --port)         KEPLER_PORT="$2";    shift 2 ;;
+        --enable-indi-gpsd) ENABLE_INDI_GPSD=true; shift ;;
         --skip-restart) SKIP_RESTART=true;   shift ;;
         --help|-h)      usage ;;
         *) fail "Unknown argument: $1" ;;
@@ -388,7 +403,7 @@ fi
 if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && -n "${MANIFEST_INDI_PROFILE_DRIVERS}" ]]; then
     INDI_PROFILE_DRIVERS="${MANIFEST_INDI_PROFILE_DRIVERS}"
 fi
-if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && "${KEPLER_ENABLE_INDI_GPSD:-false}" == "true" ]] \
+if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && "${ENABLE_INDI_GPSD}" == "true" ]] \
     && ! printf '%s' "${INDI_PROFILE_DRIVERS}" | grep -Fq "${INDI_GPSD_DRIVER_LABEL}"; then
     INDI_PROFILE_DRIVERS="${INDI_PROFILE_DRIVERS},${INDI_GPSD_DRIVER_LABEL}"
 fi

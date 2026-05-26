@@ -601,6 +601,9 @@ def test_bootstrap_and_upgrade_support_opt_in_indi_gpsd_driver() -> None:
         assert 'INDI_PROFILE_DRIVERS="${INDI_PROFILE_DRIVERS},${INDI_GPSD_DRIVER_LABEL}"' in content, (
             f"{script_name} must append the GPSD driver to the managed INDI profile when the supported opt-in is enabled"
         )
+        assert "--enable-indi-gpsd" in content, (
+            f"{script_name} must expose a CLI flag for enabling the managed INDI GPSD driver"
+        )
 
 
 def test_upgrade_sh_applies_gpsd_opt_in_after_manifest_driver_restore() -> None:
@@ -611,7 +614,7 @@ def test_upgrade_sh_applies_gpsd_opt_in_after_manifest_driver_restore() -> None:
         'fi'
     )
     gpsd_opt_in = (
-        'if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && "${KEPLER_ENABLE_INDI_GPSD:-false}" == "true" ]] \\\n'
+        'if [[ -z "${KEPLER_INDI_PROFILE_DRIVERS:-}" && "${ENABLE_INDI_GPSD}" == "true" ]] \\\n'
         "    && ! printf '%s' \"${INDI_PROFILE_DRIVERS}\" | grep -Fq \"${INDI_GPSD_DRIVER_LABEL}\"; then\n"
         '    INDI_PROFILE_DRIVERS="${INDI_PROFILE_DRIVERS},${INDI_GPSD_DRIVER_LABEL}"\n'
         'fi'
@@ -620,7 +623,7 @@ def test_upgrade_sh_applies_gpsd_opt_in_after_manifest_driver_restore() -> None:
         "upgrade.sh must restore the managed INDI driver list from the install manifest when no explicit override is supplied"
     )
     assert gpsd_opt_in in content, (
-        "upgrade.sh must still honor KEPLER_ENABLE_INDI_GPSD after restoring manifest-backed drivers so operators can add GPSD on an existing node"
+        "upgrade.sh must still honor explicit GPSD opt-in after restoring manifest-backed drivers so operators can add GPSD on an existing node"
     )
 
 
@@ -651,6 +654,17 @@ def test_bootstrap_and_upgrade_persist_managed_indi_profile_settings() -> None:
     assert "managed_indi_profile_drivers" in upgrade_content, (
         "upgrade.sh must restore the persisted managed INDI driver list when no explicit override is supplied"
     )
+
+
+def test_bootstrap_and_upgrade_delete_legacy_space_named_starter_profile() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert 'legacy_profile_name="Kepler Starter Rig"' in content, (
+            f"{script_name} must clean up the old space-named starter profile so operators do not keep inspecting a stale orphan profile"
+        )
+        assert 'api/profiles/${encoded_legacy_name}' in content, (
+            f"{script_name} must delete the legacy space-named starter profile before recreating the managed hyphenated profile"
+        )
 
 
 def test_bootstrap_and_upgrade_write_indiwebmanager_with_real_home() -> None:

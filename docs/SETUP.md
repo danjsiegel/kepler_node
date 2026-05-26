@@ -84,13 +84,13 @@ If you only want Kepler to trust GPS-backed time, the default bootstrap is enoug
 If you also want the managed Ekos profile to expose GPS through INDI, enable it explicitly:
 
 ```bash
-sudo env KEPLER_ENABLE_INDI_GPSD=true ./bootstrap.sh --profile headless-node
+sudo ./bootstrap.sh --profile headless-node --enable-indi-gpsd
 
 # Existing node: refresh services and keep the GPSD driver in the managed profile
-sudo env KEPLER_ENABLE_INDI_GPSD=true ./upgrade.sh
+sudo ./upgrade.sh --enable-indi-gpsd
 ```
 
-That choice is persisted in the install manifest so later upgrades keep the same managed INDI driver list unless you override `KEPLER_INDI_PROFILE_DRIVERS` yourself.
+That choice is persisted in the install manifest so later upgrades keep the same managed INDI driver list unless you override `KEPLER_INDI_PROFILE_DRIVERS` yourself. The older `KEPLER_ENABLE_INDI_GPSD=true` environment variable still works, but the CLI flag is the supported path.
 
 ### Upgrade Command
 
