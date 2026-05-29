@@ -667,6 +667,14 @@ def test_bootstrap_and_upgrade_delete_legacy_space_named_starter_profile() -> No
         )
 
 
+def test_bootstrap_and_upgrade_use_short_configurable_fuji_keepalive_interval() -> None:
+    for script_name in ("bootstrap.sh", "upgrade.sh"):
+        content = (_REPO_ROOT / script_name).read_text()
+        assert 'INTERVAL="${KEPLER_CAMERA_KEEPALIVE_INTERVAL_SEC:-20}"' in content, (
+            f"{script_name} must keep the idle Fuji attach keepalive interval configurable and shorter than the observed ~76 second disconnect window"
+        )
+
+
 def test_bootstrap_and_upgrade_write_indiwebmanager_with_real_home() -> None:
     for script_name in ("bootstrap.sh", "upgrade.sh"):
         content = (_REPO_ROOT / script_name).read_text()

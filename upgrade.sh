@@ -293,7 +293,7 @@ install_fuji_camera_keepalive() {
 # timer.  Exits when the camera is no longer reachable (disconnect/power-off).
 
 LOGFILE=/var/log/kepler-camera-attach.log
-INTERVAL=120
+INTERVAL="${KEPLER_CAMERA_KEEPALIVE_INTERVAL_SEC:-20}"
 
 indi_camera_driver_active() {
     pgrep -f 'indi_(fuji|gphoto)_ccd' >/dev/null 2>&1
