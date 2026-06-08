@@ -49,6 +49,9 @@ class FakeFocusCamera:
         cv2.imwrite(str(image_path), img)
         return CaptureResult(image_path=image_path, captured_at=datetime.now(UTC))
 
+    def capture_preview(self, request: CaptureRequest) -> CaptureResult:
+        return self.capture(request)
+
 
 def test_focus_assist_runner_moves_to_better_focus_position(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

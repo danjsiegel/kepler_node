@@ -21,6 +21,8 @@ class FocusAssistCamera(Protocol):
 
     def capture(self, request: CaptureRequest) -> CaptureResult: ...
 
+    def capture_preview(self, request: CaptureRequest) -> CaptureResult: ...
+
     def read_focus_position_raw(self) -> int: ...
 
     def set_focus_position_raw(self, raw_value: int) -> int: ...
@@ -215,14 +217,16 @@ class FujiFocusAssistRunner:
         phase: str,
     ) -> FocusAssistSample:
         settled = self._camera.set_focus_position_raw(raw_position)
-        result = self._camera.capture(
-            CaptureRequest(
-                exposure_seconds=request.exposure_seconds,
-                settings=CameraSettings(iso=request.iso, aperture=request.aperture),
-                destination_dir=request.destination_dir,
-                frame_label=f"{phase}-raw-{settled}",
-            )
+        capture_request = CaptureRequest(
+            exposure_seconds=request.exposure_seconds,
+            settings=CameraSettings(iso=request.iso, aperture=request.aperture),
+            destination_dir=request.destination_dir,
+            frame_label=f"{phase}-raw-{settled}",
         )
+        if hasattr(self._camera, "capture_preview"):
+            result = self._camera.capture_preview(capture_request)
+        else:
+            result = self._camera.capture(capture_request)
         scored = score_focus_frame(result.image_path, self._analyzer)
         scored.raw_position = settled
         return scored

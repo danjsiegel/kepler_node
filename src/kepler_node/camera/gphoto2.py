@@ -930,6 +930,43 @@ class Gphoto2CameraBackend:
             },
         )
 
+    def capture_preview(self, request: CaptureRequest) -> CaptureResult:
+        """Capture a lightweight preview frame for focus-assist style workflows."""
+        request.destination_dir.mkdir(parents=True, exist_ok=True)
+
+        self.apply_settings(request.settings)
+
+        filename_stem = request.frame_label or f"preview-{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
+        preview_path = request.destination_dir / f"{filename_stem}.jpg"
+
+        preview_result = self._run(
+            [
+                "--force-overwrite",
+                "--capture-preview",
+                "--filename",
+                str(preview_path),
+            ],
+            timeout=max(30, int(request.exposure_seconds) + 15),
+        )
+
+        if preview_result.returncode != 0 or not preview_path.exists():
+            detail = (
+                preview_result.stderr.strip()
+                or preview_result.stdout.strip()
+                or "unknown error"
+            )
+            raise RuntimeError(f"gphoto2 preview capture failed: {detail}")
+
+        return CaptureResult(
+            image_path=preview_path,
+            captured_at=datetime.now(UTC),
+            metadata={
+                "gphoto2_stdout": preview_result.stdout,
+                "gphoto2_stderr": preview_result.stderr,
+                "capture_mode": "preview",
+            },
+        )
+
     def activity_events(self) -> Iterable[DeviceActivityEvent]:
         """Yield and drain normalized device-activity events."""
         events, self._pending_events = self._pending_events, []
