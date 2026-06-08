@@ -129,6 +129,31 @@ def test_connect_allows_focus_assist_fallback_when_d171_is_readable() -> None:
     assert backend._connected is True
 
 
+def test_capture_preview_accepts_gphoto_prefixed_filename(tmp_path: Path) -> None:
+    backend = _make_backend()
+    destination_dir = tmp_path / "focus"
+
+    def fake_run(cmd: list[str], **_: object) -> MagicMock:
+        if "--capture-preview" in cmd:
+            prefixed = destination_dir / "thumb_probe.jpg"
+            prefixed.parent.mkdir(parents=True, exist_ok=True)
+            prefixed.write_bytes(b"JPEG")
+            return _proc(stdout=f"Saving file as {prefixed}\n", returncode=0)
+        return _proc(returncode=0)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = backend.capture_preview(
+            CaptureRequest(
+                exposure_seconds=1.0,
+                settings=CameraSettings(iso=1600),
+                destination_dir=destination_dir,
+                frame_label="probe",
+            )
+        )
+
+    assert result.image_path.name == "thumb_probe.jpg"
+
+
 def test_connect_raises_on_missing_gphoto2_binary() -> None:
     backend = Gphoto2CameraBackend(gphoto2_bin="/nonexistent/gphoto2")
     with patch("subprocess.run", side_effect=FileNotFoundError):

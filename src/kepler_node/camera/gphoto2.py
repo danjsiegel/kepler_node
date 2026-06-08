@@ -949,13 +949,17 @@ class Gphoto2CameraBackend:
             timeout=max(30, int(request.exposure_seconds) + 15),
         )
 
-        if preview_result.returncode != 0 or not preview_path.exists():
+        matches = sorted(request.destination_dir.glob(f"*{filename_stem}*"))
+
+        if preview_result.returncode != 0 or not matches:
             detail = (
                 preview_result.stderr.strip()
                 or preview_result.stdout.strip()
                 or "unknown error"
             )
             raise RuntimeError(f"gphoto2 preview capture failed: {detail}")
+
+        preview_path = self._preferred_capture_match(matches)
 
         return CaptureResult(
             image_path=preview_path,
