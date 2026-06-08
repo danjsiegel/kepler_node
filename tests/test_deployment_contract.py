@@ -673,6 +673,15 @@ def test_bootstrap_and_upgrade_use_short_configurable_fuji_keepalive_interval() 
         assert 'INTERVAL="${KEPLER_CAMERA_KEEPALIVE_INTERVAL_SEC:-20}"' in content, (
             f"{script_name} must keep the idle Fuji attach keepalive interval configurable and shorter than the observed ~76 second disconnect window"
         )
+        assert 'MAX_FAILURES="${KEPLER_CAMERA_KEEPALIVE_MAX_FAILURES:-3}"' in content, (
+            f"{script_name} must tolerate transient keepalive probe failures instead of exiting on the first gphoto2 hiccup"
+        )
+        assert "/main/settings/capturetarget" in content, (
+            f"{script_name} keepalive helper must try capturetarget before falling back to bulb-only probing"
+        )
+        assert "/main/status/cameramodel" in content, (
+            f"{script_name} keepalive helper must include status-surface fallbacks for bodies whose bulb control path is absent"
+        )
 
 
 def test_bootstrap_and_upgrade_write_indiwebmanager_with_real_home() -> None:

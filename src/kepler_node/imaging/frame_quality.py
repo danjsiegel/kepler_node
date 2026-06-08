@@ -14,6 +14,11 @@ from typing import NamedTuple
 import cv2
 import numpy as np
 
+try:
+    import rawpy
+except ImportError:  # pragma: no cover - optional at runtime until deps are synced
+    rawpy = None
+
 from kepler_node.imaging.protocols import QualityCheckResult, QualityClassification
 
 
@@ -155,6 +160,14 @@ class FrameQualityAnalyzer:
         img16 = cv2.imread(str(path), cv2.IMREAD_ANYDEPTH | cv2.IMREAD_GRAYSCALE)
         if img16 is not None:
             return cv2.normalize(img16, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        suffix = path.suffix.lower() if hasattr(path, "suffix") else ""
+        if suffix in {".raf", ".raw"} and rawpy is not None:
+            try:
+                with rawpy.imread(str(path)) as raw:
+                    gray = raw.raw_image_visible.astype(np.float32)
+                return cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            except (rawpy.LibRawError, OSError, ValueError):
+                return None
         return None
 
     def _detect_stars(self, gray: np.ndarray) -> list[_StarMetrics]:

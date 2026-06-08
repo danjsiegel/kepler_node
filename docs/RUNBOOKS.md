@@ -123,6 +123,85 @@ Use this when handing control back to the operator or an external client.
 2. Confirm the active data path and available space.
 3. Resolve the storage issue before retrying.
 
+## Runbook 8: Fuji Milky Way Widefield On The Pi SSD
+
+Use this when the goal is a simple widefield Milky Way session with the Fuji body and a wide lens, without relying on mount tracking or autofocus automation.
+
+Assumptions:
+
+- Fuji X-T5 with the Viltrox 13 mm lens
+- Images should land on the Pi-attached SSD, not the camera SD card
+- The workflow should stay simple and operator-driven rather than trying to force a full supervised session
+
+### 1. Preflight
+
+1. Confirm the external SSD is mounted on the Pi. The supported and simplest path is to mount it as the Kepler data root such as `/data/kepler`.
+2. Create a capture directory on the SSD before opening Ekos:
+   ```bash
+   mkdir -p /data/kepler/captures/milky_way/$(date +%F)
+   ```
+3. Confirm the camera is in USB remote-control / tether mode and that the drive mode is `Single Shot`.
+4. Keep the session local-first if possible so image transfer does not depend on weak Wi-Fi.
+
+### 2. Camera Posture
+
+1. Set the lens to manual focus.
+2. Open the aperture fully for focus work.
+3. Start with ISO `1600` to `3200`.
+4. Start with exposure `5 s` for focus checks.
+5. Do not use RAW+JPEG. Keep the capture mode simple and consistent.
+
+### 3. Focus Sequence
+
+1. Point near a dense star field or a bright star near the Milky Way target area.
+2. In Ekos Capture, use a temporary focus exposure recipe:
+   - exposure: `3 s` to `5 s`
+   - binning: `1x1`
+   - count: `1`
+3. Take a single frame.
+4. Open the returned image and zoom into the brightest stars.
+5. Adjust focus manually in very small movements.
+6. Repeat single captures until stars are smallest and roundest.
+7. If you have a Bahtinov mask that fits this lens, use it; otherwise use repeated short captures and inspect star size manually.
+8. Once focus is good, do not touch the focus ring again.
+
+### 4. Capture Storage Settings
+
+1. In the INDI camera tab, set upload mode to `Local` so frames are written on the Pi instead of being pushed back to the client.
+2. In the Capture module, set the target directory to the SSD-backed folder created earlier, for example:
+   ```text
+   /data/kepler/captures/milky_way/YYYY-MM-DD
+   ```
+3. Do not use the camera SD card as the primary session destination.
+4. If Ekos offers both client and local save paths, prefer `Local` for the real sequence and only use client-side transfer for spot checks.
+
+### 5. Simple Milky Way Sequence
+
+For a non-tracked 13 mm widefield run, start conservative:
+
+1. exposure: `8 s`
+2. ISO: `1600`
+3. aperture: wide open or one stop down if star shapes are unacceptable wide open
+4. count: `20` to `40`
+5. delay: `1 s` to `2 s`
+
+If star trailing is acceptable and the sky is dark enough, increase exposure toward `10 s` to `15 s`. If trailing becomes obvious, step back down.
+
+### 6. Verification Before The Full Run
+
+1. Take one test frame with the real capture settings.
+2. Verify three things before starting the full sequence:
+   - stars are acceptably sharp
+   - framing is correct
+   - the file landed on the Pi SSD path instead of the camera SD card or client machine
+3. Only after that should you start the multi-frame run.
+
+### 7. Recovery During The Run
+
+1. If capture hangs, stop the sequence and confirm the camera is not stuck in an in-progress exposure state.
+2. If frames start landing somewhere unexpected, stop immediately and fix upload mode and target directory before continuing.
+3. If focus slips, pause the run and return to the single-frame manual focus loop rather than trying to recover with autofocus.
+
 ## Scope
 
 These are the intended v1 operator runbooks.

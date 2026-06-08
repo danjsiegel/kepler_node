@@ -289,14 +289,31 @@ install_fuji_camera_keepalive() {
 #!/bin/bash
 # Kepler camera keepalive loop.
 # Runs from the udev add rule when a Fujifilm camera is connected.
-# Opens a PTP session every 2 minutes to suppress the camera's auto-power-off
-# timer.  Exits when the camera is no longer reachable (disconnect/power-off).
+# Opens periodic PTP probes to suppress the camera's auto-power-off timer.
+# Exits when the camera is no longer reachable (disconnect/power-off).
 
 LOGFILE=/var/log/kepler-camera-attach.log
 INTERVAL="${KEPLER_CAMERA_KEEPALIVE_INTERVAL_SEC:-20}"
+MAX_FAILURES="${KEPLER_CAMERA_KEEPALIVE_MAX_FAILURES:-3}"
 
 indi_camera_driver_active() {
     pgrep -f 'indi_(fuji|gphoto)_ccd' >/dev/null 2>&1
+}
+
+camera_keepalive_probe() {
+    local config_path
+
+    for config_path in \
+        /main/settings/capturetarget \
+        /main/actions/bulb \
+        /main/status/cameramodel \
+        /main/status/batterylevel; do
+        if /usr/bin/gphoto2 --get-config "$config_path" >> "$LOGFILE" 2>&1; then
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 sleep 2
@@ -308,14 +325,24 @@ fi
 
 echo "$(date -Iseconds) camera attached, starting keepalive loop (interval=${INTERVAL}s)" >> "$LOGFILE"
 
+failure_count=0
+
 while true; do
     if indi_camera_driver_active; then
         echo "$(date -Iseconds) indi camera driver active, keepalive exiting" >> "$LOGFILE"
         exit 0
     fi
 
-    if ! /usr/bin/gphoto2 --get-config /main/actions/bulb >> "$LOGFILE" 2>&1; then
-        break
+    if camera_keepalive_probe; then
+        failure_count=0
+    else
+        failure_count=$((failure_count + 1))
+        echo "$(date -Iseconds) keepalive probe failed (${failure_count}/${MAX_FAILURES})" >> "$LOGFILE"
+        if [[ ${failure_count} -ge ${MAX_FAILURES} ]]; then
+            break
+        fi
+        sleep 5
+        continue
     fi
 
     sleep "$INTERVAL"

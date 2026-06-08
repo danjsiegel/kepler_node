@@ -751,6 +751,17 @@ class Gphoto2CameraBackend:
             ),
         )
 
+    def read_focus_position_raw(self) -> int:
+        """Return the current Fuji d171 readback value."""
+
+        return self._read_focus_position_raw()
+
+    def set_focus_position_raw(self, raw_value: int) -> int:
+        """Move the Fuji focus surface to a raw value and return the settled readback."""
+
+        self._set_focus_position_raw(raw_value)
+        return self._wait_for_focus_settle()
+
     def disconnect(self) -> None:
         """Disconnect the camera backend."""
         self._connected = False
