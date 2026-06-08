@@ -138,21 +138,36 @@ build_and_install_kepler_fuji_ccd() {
     local build_dir="${work_root}/build"
     local patch_file="${SCRIPT_DIR}/indi/kepler_fuji_ccd/patches/0001-kepler-fuji-x-t5-hardening.patch"
     local xml_file="${SCRIPT_DIR}/indi/kepler_fuji_ccd/kepler_fuji_ccd.xml"
+    local patch_stamp="${work_root}/.kepler-fuji-patch.sha256"
+    local current_patch_sha=""
+    local cached_patch_sha=""
 
     [[ -f "${patch_file}" ]] || fail "Kepler Fuji DSLR patch file is missing at ${patch_file}"
     [[ -f "${xml_file}" ]] || fail "Kepler Fuji DSLR XML metadata is missing at ${xml_file}"
     install -d "${work_parent}" || fail "Failed to create build work root ${work_parent}"
+    install -d "${work_root}" || fail "Failed to create build cache root ${work_root}"
 
-    rm -rf "${work_root}"
+    current_patch_sha="$(sha256sum "${patch_file}" | awk '{print $1}')"
+    if [[ -f "${patch_stamp}" ]]; then
+        cached_patch_sha="$(cat "${patch_stamp}" 2>/dev/null || true)"
+    fi
 
-    git clone --depth 1 https://github.com/indilib/indi-3rdparty.git "${repo_dir}" \
-        || fail "Failed to clone indi-3rdparty upstream source"
-    git -C "${repo_dir}" fetch --depth 1 origin "${INDI_GPHOTO_UPSTREAM_REF}" \
-        || fail "Failed to fetch indi-3rdparty revision ${INDI_GPHOTO_UPSTREAM_REF}"
-    git -C "${repo_dir}" checkout --detach "${INDI_GPHOTO_UPSTREAM_REF}" \
-        || fail "Failed to checkout indi-3rdparty revision ${INDI_GPHOTO_UPSTREAM_REF}"
-    git -C "${repo_dir}" apply "${patch_file}" \
-        || fail "Failed to apply the Kepler Fuji DSLR patchset"
+    if [[ ! -d "${repo_dir}/.git" || "${cached_patch_sha}" != "${current_patch_sha}" ]]; then
+        rm -rf "${repo_dir}" "${build_dir}" "${patch_stamp}"
+
+        git clone --depth 1 https://github.com/indilib/indi-3rdparty.git "${repo_dir}" \
+            || fail "Failed to clone indi-3rdparty upstream source"
+        git -C "${repo_dir}" fetch --depth 1 origin "${INDI_GPHOTO_UPSTREAM_REF}" \
+            || fail "Failed to fetch indi-3rdparty revision ${INDI_GPHOTO_UPSTREAM_REF}"
+        git -C "${repo_dir}" checkout --detach "${INDI_GPHOTO_UPSTREAM_REF}" \
+            || fail "Failed to checkout indi-3rdparty revision ${INDI_GPHOTO_UPSTREAM_REF}"
+        git -C "${repo_dir}" apply "${patch_file}" \
+            || fail "Failed to apply the Kepler Fuji DSLR patchset"
+
+        printf '%s\n' "${current_patch_sha}" > "${patch_stamp}"
+    fi
+
+    rm -rf "${build_dir}"
 
     cmake -S "${repo_dir}/indi-gphoto" -B "${build_dir}" \
         -DCMAKE_INSTALL_PREFIX=/usr \
