@@ -60,7 +60,10 @@ def fuji_focus_assist(
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     artifact_dir = destination_dir or settings.data_dir / "focus-assist" / timestamp
 
-    camera = Gphoto2CameraBackend(gphoto2_bin=settings.gphoto2_binary)
+    camera = Gphoto2CameraBackend(
+        gphoto2_bin=settings.gphoto2_binary,
+        allow_focus_assist_surface_fallback=True,
+    )
     runner = FujiFocusAssistRunner(camera)
     request = FocusAssistRequest(
         destination_dir=artifact_dir,
@@ -117,7 +120,10 @@ def fuji_milky_way_sequence(
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     capture_dir = destination_dir or settings.data_dir / "captures" / "milky-way" / timestamp
 
-    camera = Gphoto2CameraBackend(gphoto2_bin=settings.gphoto2_binary)
+    camera = Gphoto2CameraBackend(
+        gphoto2_bin=settings.gphoto2_binary,
+        allow_focus_assist_surface_fallback=True,
+    )
     request = MilkyWaySequenceRequest(
         destination_dir=capture_dir,
         exposure_seconds=exposure_seconds,

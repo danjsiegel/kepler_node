@@ -103,6 +103,32 @@ def test_connect_raises_when_only_autofocusdrive_is_readable() -> None:
             backend.connect()
 
 
+def test_connect_allows_focus_assist_fallback_when_d171_is_readable() -> None:
+    backend = Gphoto2CameraBackend(
+        allow_focus_assist_surface_fallback=True,
+        verification_shutter_preference=ShutterPreference.ELECTRONIC_PREFERRED,
+    )
+
+    def fake_run(cmd: list[str], **_: object) -> MagicMock:
+        if cmd[:2] == ["gphoto2", "--auto-detect"]:
+            return _proc(
+                stdout="Model                          Port\n---\nFujifilm X-T5  usb:\n",
+                returncode=0,
+            )
+        if cmd[-1] == "/main/settings/capturetarget":
+            return _proc(stderr="not found in configuration tree", returncode=1)
+        if cmd[-1] == "/main/actions/bulb":
+            return _proc(stderr="not found in configuration tree", returncode=1)
+        if cmd[-1] == "/main/other/d171":
+            return _proc(stdout="Label: FocusPosition\nCurrent: 400\nEND\n", returncode=0)
+        return _proc(returncode=0)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        backend.connect()
+
+    assert backend._connected is True
+
+
 def test_connect_raises_on_missing_gphoto2_binary() -> None:
     backend = Gphoto2CameraBackend(gphoto2_bin="/nonexistent/gphoto2")
     with patch("subprocess.run", side_effect=FileNotFoundError):

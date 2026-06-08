@@ -71,11 +71,13 @@ class Gphoto2CameraBackend:
         *,
         gphoto2_bin: str = "gphoto2",
         usb_power_supply_mode: str = "off",
+        allow_focus_assist_surface_fallback: bool = False,
         verification_shutter_preference: ShutterPreference = ShutterPreference.ELECTRONIC_PREFERRED,
         shutter_preference_config_map: dict[ShutterPreference, str] | None = None,
     ) -> None:
         self._gphoto2_bin = gphoto2_bin
         self._usb_power_supply_mode = usb_power_supply_mode
+        self._allow_focus_assist_surface_fallback = allow_focus_assist_surface_fallback
         self._verification_shutter_preference = verification_shutter_preference
         self._shutter_preference_config_map = shutter_preference_config_map
         self._connected = False
@@ -250,6 +252,9 @@ class Gphoto2CameraBackend:
             )
             is not None
         )
+
+    def _has_focus_assist_surface(self) -> bool:
+        return self._config_read_succeeds(_FUJI_FOCUS_CONFIG_PATH, timeout=10)
 
     @staticmethod
     def _has_gphoto_capture_failure(stderr: str) -> bool:
@@ -646,10 +651,16 @@ class Gphoto2CameraBackend:
 
         # Verify that at least one remote-control oriented config read succeeds.
         if not self._has_remote_control_surface():
-            raise CameraRemoteModeRequired(
-                "camera_remote_mode_required: cannot read any supported remote-control config; "
-                "switch the camera into USB remote-control mode and retry connect"
-            )
+            if self._allow_focus_assist_surface_fallback and self._has_focus_assist_surface():
+                self._connected = True
+            else:
+                raise CameraRemoteModeRequired(
+                    "camera_remote_mode_required: cannot read any supported remote-control config; "
+                    "switch the camera into USB remote-control mode and retry connect"
+                )
+
+        if self._connected:
+            return
 
         # Clear any pending transfer left by a previous crashed session before
         # the first config writes (a stuck pending transfer blocks all PTP writes
