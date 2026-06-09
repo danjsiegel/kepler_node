@@ -57,6 +57,25 @@ class KeplerApiClient:
         """POST /api/v1/calibrate — transition to calibrate state."""
         return self._post("/api/v1/calibrate")
 
+    def get_widefield_recommendations(
+        self,
+        *,
+        focal_length_mm: float | None = None,
+        aperture: float | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if focal_length_mm is not None:
+            params["focal_length_mm"] = focal_length_mm
+        if aperture is not None:
+            params["aperture"] = aperture
+        return self._get("/api/v1/widefield/recommendations", params=params)
+
+    def post_focus_assist(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/api/v1/widefield/focus-assist", body=body)
+
+    def post_widefield_condition_check(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/api/v1/widefield/evaluate", body=body)
+
     # ------------------------------------------------------------------ #
     # Session state                                                        #
     # ------------------------------------------------------------------ #

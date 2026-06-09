@@ -10,10 +10,12 @@ import pytest
 
 from kepler_node.camera import fuji_focus_assist
 from kepler_node.camera.fuji_focus_assist import (
+    evaluate_widefield_conditions,
     FocusAssistRequest,
     FocusAssistSample,
     FujiFocusAssistRunner,
     MilkyWaySequenceRequest,
+    recommend_widefield_settings,
     run_milky_way_sequence,
 )
 from kepler_node.camera.protocols import CameraSettings, CaptureRequest, CaptureResult
@@ -122,3 +124,69 @@ def test_milky_way_sequence_captures_requested_frame_count(tmp_path: Path) -> No
     assert len(frames) == 3
     assert len(camera.capture_calls) == 3
     assert frames[0].image_path.exists()
+
+
+def test_focus_assist_restores_start_position_when_inconclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    camera = FakeFocusCamera(start_raw=1497, best_raw=1457)
+    runner = FujiFocusAssistRunner(camera)
+
+    def fake_score(image_path: Path, analyzer: object | None = None) -> FocusAssistSample:
+        match = re.search(r"raw-(-?\d+)", image_path.stem)
+        assert match is not None
+        raw_position = int(match.group(1))
+        return FocusAssistSample(
+            raw_position=raw_position,
+            image_path=image_path,
+            star_count=0,
+            hfr_mean=None,
+            tenengrad=550.0 - abs(raw_position - 1497) / 10.0,
+            metric_source="no-stars",
+            summary="stars=0 no-star-score",
+        )
+
+    monkeypatch.setattr(fuji_focus_assist, "score_focus_frame", fake_score)
+
+    result = runner.run(
+        FocusAssistRequest(
+            destination_dir=tmp_path,
+            exposure_seconds=1.0,
+            iso=3200,
+            focus_min_raw=45,
+            focus_max_raw=1497,
+            coarse_step=40,
+            fine_step=10,
+        )
+    )
+
+    assert result.status == "inconclusive"
+    assert result.started_raw == 1497
+    assert result.final_raw == 1497
+
+
+def test_recommend_widefield_settings_prefers_conservative_limit() -> None:
+    result = recommend_widefield_settings(focal_length_mm=13.0, aperture=1.4)
+
+    assert result.classic_500_seconds > result.crop_500_seconds
+    assert result.recommended_seconds <= result.crop_500_seconds
+    assert result.focus_iso >= 3200
+    assert result.capture_iso_min <= result.capture_iso_max
+
+
+def test_evaluate_widefield_conditions_uses_live_frame_metrics(tmp_path: Path) -> None:
+    camera = FakeFocusCamera(start_raw=400, best_raw=400)
+
+    result = evaluate_widefield_conditions(
+        camera,
+        destination_dir=tmp_path,
+        sample_exposure_seconds=2.0,
+        sample_iso=3200,
+        focal_length_mm=13.0,
+        aperture=1.4,
+    )
+
+    assert result.image_path.exists()
+    assert result.trailing_ceiling_seconds > 0
+    assert result.recommended_exposure_seconds > 0
+    assert result.recommended_iso >= 100

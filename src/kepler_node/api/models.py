@@ -258,6 +258,85 @@ class InterventionStateResponse(BaseModel):
     """GET /api/v1/session/current/intervention response."""
 
     active_kind: str | None
+
+
+class WidefieldRecommendationResponse(BaseModel):
+    """GET /api/v1/widefield/recommendations response."""
+
+    focal_length_mm: float
+    aperture: float | None = None
+    crop_factor: float
+    pixel_pitch_um: float
+    classic_500_seconds: float
+    crop_500_seconds: float
+    npf_seconds: float | None = None
+    recommended_seconds: float
+    focus_exposure_seconds: float
+    focus_iso: int
+    capture_iso_min: int
+    capture_iso_max: int
+    notes: list[str] = Field(default_factory=list)
+    lens_model: str | None = None
+
+
+class WidefieldConditionRequestBody(BaseModel):
+    destination_dir: str | None = None
+    sample_exposure_seconds: float = 2.0
+    sample_iso: int = 3200
+    focal_length_mm: float | None = None
+    aperture: float | None = None
+
+
+class WidefieldConditionEvaluationResponse(BaseModel):
+    image_path: str
+    sample_exposure_seconds: float
+    sample_iso: int
+    focal_length_mm: float
+    aperture: float | None = None
+    star_count: int
+    background_adu: float
+    highlight_fraction: float
+    trailing_ceiling_seconds: float
+    recommended_exposure_seconds: float
+    recommended_iso: int
+    status: str
+    summary: str
+    notes: list[str] = Field(default_factory=list)
+    lens_model: str | None = None
+
+
+class FocusAssistRequestBody(BaseModel):
+    """POST /api/v1/widefield/focus-assist request body."""
+
+    destination_dir: str | None = None
+    exposure_seconds: float = 3.0
+    iso: int = 3200
+    aperture: float | None = None
+    focus_min_raw: int = 45
+    focus_max_raw: int = 1497
+    coarse_step: int = 40
+    fine_step: int = 10
+    min_improvement_fraction: float = 0.05
+
+
+class FocusAssistSampleResponse(BaseModel):
+    raw_position: int
+    image_path: str
+    star_count: int
+    hfr_mean: float | None = None
+    tenengrad: float
+    metric_source: str
+    summary: str
+
+
+class FocusAssistActionResponse(BaseModel):
+    status: str
+    started_raw: int
+    best_raw: int
+    final_raw: int
+    summary: str
+    coarse_samples: list[FocusAssistSampleResponse] = Field(default_factory=list)
+    fine_samples: list[FocusAssistSampleResponse] = Field(default_factory=list)
     active_reason: str | None
     active_since: datetime | None
     retry_count: int

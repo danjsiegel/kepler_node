@@ -204,8 +204,8 @@ def _planner_mode_copy(
 # Tabs                                                                 #
 # ------------------------------------------------------------------ #
 
-overview_tab, equipment_tab, target_tab, session_tab, review_tab = st.tabs(
-    ["Overview", "Equipment", "Target", "Session", "Review"]
+overview_tab, equipment_tab, widefield_tab, target_tab, session_tab, review_tab = st.tabs(
+    ["Overview", "Equipment", "Widefield", "Target", "Session", "Review"]
 )
 
 
@@ -466,6 +466,172 @@ with equipment_tab:
             resp = client.post_equipment_profile(body)
             st.success(f"Profile {resp.get('profile', {}).get('display_name', 'imported')!r} added")
             st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+
+# ===================================================================  #
+# WIDEFIELD                                                            #
+# ===================================================================  #
+
+with widefield_tab:
+    st.header("Widefield Fuji")
+    client = _client()
+
+    try:
+        node_status_w = client.get_node_status()
+    except Exception as exc:
+        st.error(f"Cannot reach Kepler API: {exc}")
+        st.stop()
+
+    active_prof_w = node_status_w.get("active_equipment_profile") or {}
+    default_focal_length = active_prof_w.get("focal_length_mm") or 13.0
+
+    st.caption(
+        "This surface measures a real preview frame, then recommends exposure and ISO from current conditions."
+    )
+
+    rec_col1, rec_col2, rec_col3 = st.columns(3)
+    with rec_col1:
+        focal_length_mm = st.number_input(
+            "Focal Length (mm)",
+            min_value=1.0,
+            value=float(default_focal_length),
+            step=1.0,
+            key="widefield_focal_length_mm",
+        )
+    with rec_col2:
+        aperture = st.number_input(
+            "Aperture (f/)",
+            min_value=0.7,
+            value=1.4,
+            step=0.1,
+            key="widefield_aperture",
+        )
+    with rec_col3:
+        destination_dir = st.text_input(
+            "Artifact Dir",
+            value="/data/kepler/focus-assist/widefield",
+            key="widefield_destination_dir",
+        )
+
+    eval_col1, eval_col2 = st.columns(2)
+    with eval_col1:
+        sample_exposure = st.number_input(
+            "Sample Exposure (s)", min_value=0.5, value=2.0, step=0.5, key="widefield_sample_exposure"
+        )
+    with eval_col2:
+        sample_iso = st.number_input(
+            "Sample ISO", min_value=100, value=3200, step=100, key="widefield_sample_iso"
+        )
+
+    if st.button("🌌 Evaluate Conditions", key="widefield_evaluate_btn"):
+        try:
+            evaluation = client.post_widefield_condition_check(
+                {
+                    "destination_dir": destination_dir,
+                    "sample_exposure_seconds": float(sample_exposure),
+                    "sample_iso": int(sample_iso),
+                    "focal_length_mm": float(focal_length_mm),
+                    "aperture": float(aperture),
+                }
+            )
+            st.markdown(
+                f"**Status:** {evaluation.get('status')}  \n"
+                f"**Summary:** {evaluation.get('summary')}"
+            )
+            met1, met2, met3, met4 = st.columns(4)
+            with met1:
+                st.metric("Stars", str(evaluation.get("star_count", 0)))
+            with met2:
+                st.metric("Background", f"{evaluation.get('background_adu', 0):.1f}")
+            with met3:
+                st.metric("Rec Exposure", f"{evaluation.get('recommended_exposure_seconds', 0):.1f} s")
+            with met4:
+                st.metric("Rec ISO", str(evaluation.get("recommended_iso", 0)))
+
+            st.caption(f"Preview saved to {evaluation.get('image_path', '—')}")
+            st.caption(
+                f"Trailing ceiling estimate: {evaluation.get('trailing_ceiling_seconds', 0):.1f} s"
+            )
+            for note in evaluation.get("notes", []):
+                st.caption(f"- {note}")
+        except Exception as exc:
+            st.error(str(exc))
+
+    with st.expander("Show Rule-of-Thumb Ceiling"):
+        try:
+            rec = client.get_widefield_recommendations(
+                focal_length_mm=focal_length_mm,
+                aperture=aperture,
+            )
+            met1, met2, met3, met4 = st.columns(4)
+            with met1:
+                st.metric("Classic 500", f"{rec.get('classic_500_seconds', 0):.1f} s")
+            with met2:
+                st.metric("Crop 500", f"{rec.get('crop_500_seconds', 0):.1f} s")
+            with met3:
+                npf_seconds = rec.get("npf_seconds")
+                st.metric("NPF Approx", f"{npf_seconds:.1f} s" if npf_seconds is not None else "—")
+            with met4:
+                st.metric("Ceiling", f"{rec.get('recommended_seconds', 0):.1f} s")
+        except Exception as exc:
+            st.warning(f"Could not load ceiling estimate: {exc}")
+
+    st.divider()
+    st.subheader("Focus Assist")
+    focus_col1, focus_col2, focus_col3 = st.columns(3)
+    with focus_col1:
+        focus_exposure = st.number_input(
+            "Focus Exposure (s)", min_value=0.5, value=3.0, step=0.5, key="focus_assist_exposure"
+        )
+        focus_iso = st.number_input(
+            "Focus ISO", min_value=100, value=3200, step=100, key="focus_assist_iso"
+        )
+    with focus_col2:
+        focus_min_raw = st.number_input(
+            "Focus Min Raw", min_value=-1000, value=45, step=1, key="focus_assist_min_raw"
+        )
+        focus_max_raw = st.number_input(
+            "Focus Max Raw", min_value=0, value=1497, step=1, key="focus_assist_max_raw"
+        )
+    with focus_col3:
+        coarse_step = st.number_input(
+            "Coarse Step", min_value=1, value=40, step=1, key="focus_assist_coarse"
+        )
+        fine_step = st.number_input(
+            "Fine Step", min_value=0, value=10, step=1, key="focus_assist_fine"
+        )
+
+    if st.button("🔎 Run Focus Assist", key="run_focus_assist_btn"):
+        try:
+            focus_result = client.post_focus_assist(
+                {
+                    "destination_dir": destination_dir,
+                    "exposure_seconds": focus_exposure,
+                    "iso": int(focus_iso),
+                    "aperture": aperture,
+                    "focus_min_raw": int(focus_min_raw),
+                    "focus_max_raw": int(focus_max_raw),
+                    "coarse_step": int(coarse_step),
+                    "fine_step": int(fine_step),
+                }
+            )
+            if focus_result.get("status") == "success":
+                st.success(focus_result.get("summary", "Focus assist succeeded"))
+            else:
+                st.warning(focus_result.get("summary", "Focus assist was inconclusive"))
+
+            st.markdown(
+                f"**Start:** {focus_result.get('started_raw')}  \n"
+                f"**Best:** {focus_result.get('best_raw')}  \n"
+                f"**Final:** {focus_result.get('final_raw')}"
+            )
+
+            all_samples = focus_result.get("coarse_samples", []) + focus_result.get("fine_samples", [])
+            if all_samples:
+                st.markdown("**Samples**")
+                st.dataframe(all_samples, use_container_width=True)
         except Exception as exc:
             st.error(str(exc))
 

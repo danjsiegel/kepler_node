@@ -46,6 +46,9 @@ from kepler_node.api.models import (
     FrameListResponse,
     FrameSummary,
     HealthResponse,
+    FocusAssistActionResponse,
+    FocusAssistRequestBody,
+    FocusAssistSampleResponse,
     InterventionStateResponse,
     NodeStatusResponse,
     OutcomeSummary,
@@ -57,6 +60,15 @@ from kepler_node.api.models import (
     TargetRequest,
     TimeConfirmRequest,
     TimeConfirmResponse,
+    WidefieldConditionEvaluationResponse,
+    WidefieldConditionRequestBody,
+    WidefieldRecommendationResponse,
+)
+from kepler_node.camera.fuji_focus_assist import (
+    evaluate_widefield_conditions,
+    FocusAssistRequest,
+    FujiFocusAssistRunner,
+    recommend_widefield_settings,
 )
 
 _logger = logging.getLogger(__name__)
@@ -801,6 +813,158 @@ def build_app(*, controller: ClawController, ekos_output_dir: Path | None = None
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return _action_resp(controller, result.message, next_state=result.next_state)
+
+    @app.get("/api/v1/widefield/recommendations", response_model=WidefieldRecommendationResponse)
+    def get_widefield_recommendations(
+        focal_length_mm: Annotated[float | None, Query()] = None,
+        aperture: Annotated[float | None, Query()] = None,
+    ) -> WidefieldRecommendationResponse:
+        profile = controller.active_equipment_profile
+        resolved_focal_length = focal_length_mm
+        resolved_aperture = aperture
+        lens_model = None
+        if profile is not None:
+            lens_model = profile.hardware.lens.model
+            if resolved_focal_length is None:
+                resolved_focal_length = (
+                    profile.solving_hints.focal_length_assumption_mm
+                    or profile.hardware.lens.default_focal_length_mm
+                )
+        if resolved_focal_length is None:
+            raise HTTPException(status_code=422, detail="focal_length_mm is required when no active profile provides one")
+
+        recommendation = recommend_widefield_settings(
+            focal_length_mm=resolved_focal_length,
+            aperture=resolved_aperture,
+        )
+        return WidefieldRecommendationResponse(
+            **recommendation.__dict__,
+            lens_model=lens_model,
+        )
+
+    @app.post("/api/v1/widefield/evaluate", response_model=WidefieldConditionEvaluationResponse)
+    def post_widefield_evaluate(
+        body: WidefieldConditionRequestBody,
+    ) -> WidefieldConditionEvaluationResponse:
+        profile = controller.active_equipment_profile
+        resolved_focal_length = body.focal_length_mm
+        resolved_aperture = body.aperture
+        lens_model = None
+        if profile is not None:
+            lens_model = profile.hardware.lens.model
+            if resolved_focal_length is None:
+                resolved_focal_length = (
+                    profile.solving_hints.focal_length_assumption_mm
+                    or profile.hardware.lens.default_focal_length_mm
+                )
+        if resolved_focal_length is None:
+            raise HTTPException(status_code=422, detail="focal_length_mm is required when no active profile provides one")
+
+        destination_dir = (
+            Path(body.destination_dir)
+            if body.destination_dir
+            else controller.store.data_root / "widefield-eval" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        )
+
+        with controller._camera_io_lock:
+            try:
+                controller.camera.connect()
+                result = evaluate_widefield_conditions(
+                    controller.camera,
+                    destination_dir=destination_dir,
+                    sample_exposure_seconds=body.sample_exposure_seconds,
+                    sample_iso=body.sample_iso,
+                    focal_length_mm=resolved_focal_length,
+                    aperture=resolved_aperture,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            finally:
+                with contextlib.suppress(Exception):
+                    controller.camera.disconnect()
+
+        return WidefieldConditionEvaluationResponse(
+            image_path=str(result.image_path),
+            sample_exposure_seconds=result.sample_exposure_seconds,
+            sample_iso=result.sample_iso,
+            focal_length_mm=result.focal_length_mm,
+            aperture=result.aperture,
+            star_count=result.star_count,
+            background_adu=result.background_adu,
+            highlight_fraction=result.highlight_fraction,
+            trailing_ceiling_seconds=result.trailing_ceiling_seconds,
+            recommended_exposure_seconds=result.recommended_exposure_seconds,
+            recommended_iso=result.recommended_iso,
+            status=result.status,
+            summary=result.summary,
+            notes=result.notes,
+            lens_model=lens_model,
+        )
+
+    @app.post("/api/v1/widefield/focus-assist", response_model=FocusAssistActionResponse)
+    def post_focus_assist(body: FocusAssistRequestBody) -> FocusAssistActionResponse:
+        if not hasattr(controller.camera, "read_focus_position_raw") or not hasattr(controller.camera, "set_focus_position_raw"):
+            raise HTTPException(status_code=422, detail="active camera backend does not support Fuji focus assist")
+
+        destination_dir = (
+            Path(body.destination_dir)
+            if body.destination_dir
+            else controller.store.data_root / "focus-assist" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        )
+        runner = FujiFocusAssistRunner(controller.camera)
+        request = FocusAssistRequest(
+            destination_dir=destination_dir,
+            exposure_seconds=body.exposure_seconds,
+            iso=body.iso,
+            aperture=body.aperture,
+            focus_min_raw=body.focus_min_raw,
+            focus_max_raw=body.focus_max_raw,
+            coarse_step=body.coarse_step,
+            fine_step=body.fine_step,
+            min_improvement_fraction=body.min_improvement_fraction,
+        )
+
+        with controller._camera_io_lock:
+            try:
+                controller.camera.connect()
+                result = runner.run(request)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            finally:
+                with contextlib.suppress(Exception):
+                    controller.camera.disconnect()
+
+        return FocusAssistActionResponse(
+            status=result.status,
+            started_raw=result.started_raw,
+            best_raw=result.best_raw,
+            final_raw=result.final_raw,
+            summary=result.summary,
+            coarse_samples=[
+                FocusAssistSampleResponse(
+                    raw_position=sample.raw_position,
+                    image_path=str(sample.image_path),
+                    star_count=sample.star_count,
+                    hfr_mean=sample.hfr_mean,
+                    tenengrad=sample.tenengrad,
+                    metric_source=sample.metric_source,
+                    summary=sample.summary,
+                )
+                for sample in result.coarse_samples
+            ],
+            fine_samples=[
+                FocusAssistSampleResponse(
+                    raw_position=sample.raw_position,
+                    image_path=str(sample.image_path),
+                    star_count=sample.star_count,
+                    hfr_mean=sample.hfr_mean,
+                    tenengrad=sample.tenengrad,
+                    metric_source=sample.metric_source,
+                    summary=sample.summary,
+                )
+                for sample in result.fine_samples
+            ],
+        )
 
     # ------------------------------------------------------------------ #
     # GET /api/v1/session/current                                          #
