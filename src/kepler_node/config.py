@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # Local binary paths
     gphoto2_binary: str = "gphoto2"
     solve_field_binary: str = "solve-field"
+    siril_binary: str = "siril-cli"
 
     # INDI server connection
     indiserver_host: str = "localhost"

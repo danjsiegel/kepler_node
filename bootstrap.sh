@@ -489,6 +489,10 @@ COMMON_PACKAGES=(
     zlib1g-dev
 )
 
+if apt_package_available siril; then
+    COMMON_PACKAGES+=(siril)
+fi
+
 if apt_package_available indi-full; then
     COMMON_PACKAGES+=(indi-full)
 else

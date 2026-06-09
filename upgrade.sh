@@ -41,6 +41,10 @@ ok()   { echo "  ✅ $*"; }
 fail() { echo "  ❌ $*" >&2; exit 1; }
 warn() { echo "  ⚠️  $*"; }
 
+apt_package_available() {
+    apt-cache show "$1" >/dev/null 2>&1
+}
+
 json_manifest_string_field() {
     local manifest_path="$1"
     local field_name="$2"
@@ -616,7 +620,11 @@ ok "Dependencies synced"
 
 log "Step 3a: Ensuring Fuji camera driver build prerequisites..."
 apt-get update -qq
-apt-get install -y --no-install-recommends build-essential cmake pkg-config git gphoto2 libcfitsio-dev libgphoto2-dev libindi-dev libjpeg-dev libraw-dev libusb-1.0-0-dev zlib1g-dev \
+UPGRADE_PACKAGES=(build-essential cmake pkg-config git gphoto2 libcfitsio-dev libgphoto2-dev libindi-dev libjpeg-dev libraw-dev libusb-1.0-0-dev zlib1g-dev)
+if apt_package_available siril; then
+    UPGRADE_PACKAGES+=(siril)
+fi
+apt-get install -y --no-install-recommends "${UPGRADE_PACKAGES[@]}" \
     || fail "Fuji camera driver build prerequisites could not be installed"
 
 log "Step 3aa: Building and installing Kepler Fuji DSLR capture driver..."

@@ -13,6 +13,7 @@ from kepler_node.camera.fuji_focus_assist import (
 )
 from kepler_node.camera.gphoto2 import Gphoto2CameraBackend
 from kepler_node.config import Settings
+from kepler_node.imaging.siril_stack import SirilStackRequest, run_milky_way_stack
 
 app = typer.Typer(help="Kepler Node development CLI.")
 
@@ -142,6 +143,35 @@ def fuji_milky_way_sequence(
 
     for idx, frame in enumerate(frames, start=1):
         typer.echo(f"frame {idx}/{frame_count}: {frame.image_path}")
+
+
+@app.command("fuji-milky-way-stack")
+def fuji_milky_way_stack(
+    lights_dir: Path = typer.Option(..., help="Directory containing the Milky Way light frames to stack."),
+    output_dir: Path | None = typer.Option(None, help="Directory for Siril working files and final stack."),
+    sequence_name: str = typer.Option("light", help="Siril sequence basename for converted lights."),
+    stacked_name: str = typer.Option("milky_way_stacked", help="Final Siril stack basename."),
+    sigma_low: float = typer.Option(3.0, help="Low rejection sigma for winsorized stack."),
+    sigma_high: float = typer.Option(3.0, help="High rejection sigma for winsorized stack."),
+) -> None:
+    """Run a simple headless Siril stack over Milky Way light frames."""
+
+    settings = Settings()
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stack_dir = output_dir or settings.data_dir / "stacks" / timestamp
+    result = run_milky_way_stack(
+        SirilStackRequest(
+            lights_dir=lights_dir,
+            output_dir=stack_dir,
+            sequence_name=sequence_name,
+            stacked_name=stacked_name,
+            sigma_low=sigma_low,
+            sigma_high=sigma_high,
+        ),
+        siril_binary=settings.siril_binary,
+    )
+    typer.echo(f"stacked={result.stacked_path}")
+    typer.echo(f"log={result.working_dir / 'siril-stack.log'}")
 
 
 @app.command("serve")
