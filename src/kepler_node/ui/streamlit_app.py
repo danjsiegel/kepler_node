@@ -486,6 +486,11 @@ with widefield_tab:
 
     active_prof_w = node_status_w.get("active_equipment_profile") or {}
     default_focal_length = active_prof_w.get("focal_length_mm") or 13.0
+    default_data_dir = str(_client().get_node_status().get("install_manifest", {}).get("data_dir", ""))
+    if not default_data_dir:
+        from kepler_node.config import Settings as _Settings
+
+        default_data_dir = str(_Settings().data_dir)
 
     st.caption(
         "This surface measures a real preview frame, then recommends exposure and ISO from current conditions."
@@ -511,7 +516,7 @@ with widefield_tab:
     with rec_col3:
         destination_dir = st.text_input(
             "Artifact Dir",
-            value="/data/kepler/focus-assist/widefield",
+            value=f"{default_data_dir}/focus-assist/widefield",
             key="widefield_destination_dir",
         )
 

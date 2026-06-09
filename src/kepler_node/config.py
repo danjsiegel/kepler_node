@@ -6,6 +6,27 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _default_data_dir() -> Path:
+    """Return the preferred local data root when KEPLER_DATA_DIR is unset.
+
+    Preference order:
+    1. NVMe-backed `/media/nvme/kepler` when `/media/nvme` is mounted
+    2. Existing `/data/kepler`
+    3. Repo-local `./data` fallback for development
+    """
+
+    nvme_mount = Path("/media/nvme")
+    nvme_data_dir = nvme_mount / "kepler"
+    if nvme_mount.exists() and nvme_mount.is_mount():
+        return nvme_data_dir
+
+    legacy_data_dir = Path("/data/kepler")
+    if legacy_data_dir.exists():
+        return legacy_data_dir
+
+    return Path.cwd() / "data"
+
+
 class Settings(BaseSettings):
     """Project settings loaded from environment variables when needed."""
 
@@ -17,7 +38,7 @@ class Settings(BaseSettings):
     )
 
     project_root: Path = Field(default_factory=lambda: Path.cwd())
-    data_dir: Path = Field(default_factory=lambda: Path.cwd() / "data")
+    data_dir: Path = Field(default_factory=_default_data_dir)
 
     # Node-management knobs
     managed_service_names: list[str] = Field(
