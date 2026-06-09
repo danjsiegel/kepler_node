@@ -141,7 +141,13 @@ class Gphoto2CameraBackend:
         previous = None
         samples: list[int] = []
         for _ in range(max_polls):
-            current = self._read_focus_position_raw()
+            try:
+                current = self._read_focus_position_raw()
+            except RuntimeError as exc:
+                if "unavailable" in str(exc).lower():
+                    time.sleep(poll_interval_seconds)
+                    continue
+                raise
             samples.append(current)
             if previous is None:
                 stable_reads = 1

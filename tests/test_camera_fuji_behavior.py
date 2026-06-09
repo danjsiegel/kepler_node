@@ -220,6 +220,22 @@ def test_calibrate_focus_range_uses_empirical_probe_targets() -> None:
     assert result.normalized_max == 11128
 
 
+def test_wait_for_focus_settle_tolerates_transient_unavailable_reads() -> None:
+    backend = _make_backend()
+    backend._read_focus_position_raw = MagicMock(
+        side_effect=[
+            RuntimeError("Fuji focus position is unavailable"),
+            708,
+            708,
+            708,
+        ]
+    )
+
+    result = backend._wait_for_focus_settle(poll_interval_seconds=0.0, max_polls=5)
+
+    assert result == 708
+
+
 # ---------------------------------------------------------------------------
 # Capture failure → drain recovery
 # ---------------------------------------------------------------------------
