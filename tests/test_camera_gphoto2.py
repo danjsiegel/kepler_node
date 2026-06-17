@@ -741,7 +741,7 @@ def test_capture_prefers_raf_when_jpg_and_raf_are_downloaded(tmp_path: Path) -> 
     with patch("subprocess.run", side_effect=fake_run):
         result = backend.capture(request)
 
-    assert result.image_path == fake_raf
+    assert result.image_path == tmp_path / "frames" / "frame-both.raf"
 
 
 def test_capture_uses_force_overwrite_for_repeated_frame_labels(tmp_path: Path) -> None:
@@ -882,7 +882,7 @@ def test_capture_recovers_pending_transfer_after_gphoto2_failure(tmp_path: Path)
     with patch("subprocess.run", side_effect=fake_run):
         result = backend.capture(request)
 
-    assert result.image_path == pending_raf
+    assert result.image_path == tmp_path / "frames" / "drain-test.raf"
 
 
 def test_capture_succeeds_when_files_exist_despite_nonfatal_download_stderr(tmp_path: Path) -> None:
@@ -920,7 +920,7 @@ def test_capture_succeeds_when_files_exist_despite_nonfatal_download_stderr(tmp_
     with patch("subprocess.run", side_effect=fake_run):
         result = backend.capture(request)
 
-    assert result.image_path == fake_raf
+    assert result.image_path == tmp_path / "frames" / "frame-partial-download.raf"
     assert "PTP Access Denied" in result.metadata["gphoto2_stderr"]
 
 

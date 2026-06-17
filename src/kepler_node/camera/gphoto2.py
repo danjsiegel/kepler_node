@@ -56,6 +56,7 @@ _DIAGNOSTIC_PROBE_TIMEOUT_SECONDS = 2
 _FUJI_FOCUS_CONFIG_PATH = "/main/other/d171"
 _FUJI_FOCUS_EXTREME_LOW = -10000
 _FUJI_FOCUS_EXTREME_HIGH = 11000
+_KNOWN_CAPTURE_EXTENSIONS = ("jpeg", "jpg", "tiff", "tif", "fits", "fit", "fts", "raf", "raw")
 
 
 class Gphoto2CameraBackend:
@@ -278,6 +279,23 @@ class Gphoto2CameraBackend:
             return (2, name)
 
         return sorted(matches, key=score)[0]
+
+    @staticmethod
+    def _normalize_capture_extension(path: Path) -> Path:
+        if path.suffix:
+            return path
+
+        lowered = path.name.lower()
+        for extension in _KNOWN_CAPTURE_EXTENSIONS:
+            if lowered.endswith(extension):
+                renamed = path.with_name(f"{path.name[:-len(extension)]}.{extension}")
+                if renamed != path:
+                    path.rename(renamed)
+                    return renamed
+        return path
+
+    def _normalize_capture_matches(self, matches: list[Path]) -> list[Path]:
+        return [self._normalize_capture_extension(path) for path in matches]
 
     @staticmethod
     def _is_autocapture_mode(capture_mode: str | None) -> bool:
@@ -895,7 +913,9 @@ class Gphoto2CameraBackend:
         )
 
         captured_at = datetime.now(UTC)
-        matches = sorted(request.destination_dir.glob(f"{filename_stem}*"))
+        matches = self._normalize_capture_matches(
+            sorted(request.destination_dir.glob(f"{filename_stem}*"))
+        )
 
         if (
             capture_result.returncode != 0
@@ -905,7 +925,9 @@ class Gphoto2CameraBackend:
             # operation (camera UI shows "Transfer image to PC"; all PTP writes
             # block with 0xa002 until the object is drained).  Attempt to drain
             # it before surfacing the error to the caller.
-            matches = self._drain_pending_transfer(request.destination_dir, filename_stem)
+            matches = self._normalize_capture_matches(
+                self._drain_pending_transfer(request.destination_dir, filename_stem)
+            )
             if not matches:
                 detail = (
                     capture_result.stderr.strip()
@@ -956,6 +978,7 @@ class Gphoto2CameraBackend:
         )
 
         matches = sorted(request.destination_dir.glob(f"*{filename_stem}*"))
+        matches = self._normalize_capture_matches(matches)
 
         if preview_result.returncode != 0 or not matches:
             detail = (
