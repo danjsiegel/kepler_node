@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+import subprocess
 
 import typer
 
@@ -16,6 +17,29 @@ from kepler_node.config import Settings
 from kepler_node.imaging.siril_stack import SirilStackRequest, run_milky_way_stack
 
 app = typer.Typer(help="Kepler Node development CLI.")
+
+
+def _run_best_effort(command: list[str]) -> None:
+    try:
+        subprocess.run(command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (FileNotFoundError, PermissionError, OSError):
+        return
+
+
+def _prepare_direct_fuji_camera_ownership() -> None:
+    """Stop known background claimers before direct gphoto2 control.
+
+    The Fuji keepalive helper is installed as a systemd transient unit and can
+    wake up every ~20s, which races with pure Kepler direct-control commands.
+    Desktop gphoto/MTP auto-mounters can do the same. Best effort only.
+    """
+
+    _run_best_effort(["systemctl", "stop", "kepler-camera-attach"])
+    _run_best_effort(["pkill", "-x", "gvfsd-gphoto2"])
+    _run_best_effort(["pkill", "-f", "gphoto2-volume-monitor"])
+    _run_best_effort(["pkill", "-f", "gvfs-udisks2-volume-monitor"])
+    _run_best_effort(["pkill", "-f", "gvfs-mtp-volume-monitor"])
+    _run_best_effort(["pkill", "-f", "/usr/local/bin/kepler-camera-attach"])
 
 
 @app.callback()
@@ -79,6 +103,7 @@ def fuji_focus_assist(
     )
 
     typer.echo(f"Artifacts: {artifact_dir}")
+    _prepare_direct_fuji_camera_ownership()
     camera.connect()
     try:
         result = runner.run(request)
@@ -135,6 +160,7 @@ def fuji_milky_way_sequence(
     )
 
     typer.echo(f"Capture directory: {capture_dir}")
+    _prepare_direct_fuji_camera_ownership()
     camera.connect()
     try:
         frames = run_milky_way_sequence(camera, request)
